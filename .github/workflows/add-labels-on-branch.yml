@@ -1,0 +1,27 @@
+name: Branch created
+
+on:
+  create:
+
+
+jobs:
+  mark-issue-as-started:
+    if: github.event.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set issue number
+        id: set-issue_number
+        run: echo "ISSUE_NUMBER=$(echo ${{ github.event.ref }} | grep -o '^[0-9]\+\-' | tr -d '-')" >> "$GITHUB_ENV"
+      - name: Add started label
+        if: env.ISSUE_NUMBER != ''
+        uses: actions/github-script@v6
+        env:
+          issue_number: ${{env.ISSUE_NUMBER}}
+        with:
+          script: |
+            github.rest.issues.addLabels({
+              issue_number: process.env.issue_number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ["started"]
+            })

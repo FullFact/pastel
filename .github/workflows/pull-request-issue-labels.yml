@@ -1,0 +1,59 @@
+name: Link PR to an Issue
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+jobs:
+  add-review-label:
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.draft == false &&
+      startsWith(github.head_ref, 'chore') == false
+
+    runs-on: ubuntu-latest
+    steps:
+
+    - name: Set issue number
+      id: set-issue_number
+      run: echo "ISSUE_NUMBER=$(echo ${{ github.head_ref }} | grep -o '^[0-9]\+\-' | tr -d '-')" >> "$GITHUB_ENV"
+
+    - name: Check branch name
+      if: env.ISSUE_NUMBER == ''
+      uses: actions/github-script@v6
+      with:
+        script: |
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: '❗ The branch name `${{ github.head_ref }}` does not follow the pattern `[issue-number]-description-here`.\n\nIn order to correctly link this PR to an issue, the branch name should be prefixed with the relevant issue number.\n\nPlease recreate this PR using required branch name structure (e.g. `42-${{ github.head_ref }}`).'
+          })
+
+    - name: Add comment
+      if: env.ISSUE_NUMBER != ''
+      uses: actions/github-script@v6
+      env:
+        issue_number: ${{env.ISSUE_NUMBER}}
+      with:
+        script: |
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: "✅ This PR has been automatically linked to #" + ${{env.ISSUE_NUMBER}} + " and the `review` label has been added to the issue.\n\nIf this PR should close the issue when merged, don't forget to use a closing term in the PR description (`closes`, `fixes`, `resolves`)."
+          })
+
+    - name: Add started label
+      if: env.ISSUE_NUMBER != ''
+      uses: actions/github-script@v6
+      env:
+        issue_number: ${{env.ISSUE_NUMBER}}
+      with:
+        script: |
+          github.rest.issues.addLabels({
+            issue_number: process.env.issue_number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            labels: ["review", "started"]
+          })

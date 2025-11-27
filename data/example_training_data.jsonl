@@ -1,0 +1,30 @@
+{"sentence_text": "The government's new 'Homes for Heroes' scheme will deliver 50,000 new affordable homes for ex-service personnel by the end of this financial year.", "score": "5.0", "claim_types": ["quantity"]}
+{"sentence_text": "Labour's pledge to cut NHS waiting lists will only be achieved by re-classifying what counts as a 'waiting' patient.", "score": "4.0", "claim_types": ["prediction"]}
+{"sentence_text": "The recent amendment to the UK's Online Safety Bill means VPN usage will be completely outlawed within three months.", "score": "5.0", "claim_types": ["rules"]}
+{"sentence_text": "New official figures show that the UK's annual GDP growth has actually been negative for the last four consecutive quarters.", "score": "4.0", "claim_types": ["quantity"]}
+{"sentence_text": "I believe that the Prime Minister's public apology regarding the leaked budget details was completely insincere and insufficient.", "score": "1.0", "claim_types": ["opinion"]}
+{"sentence_text": "The significant rise in interest rates over the past year is directly correlated with a 65% drop in first-time buyer mortgage approvals.", "score": "5.0", "claim_types": ["correlation"]}
+{"sentence_text": "A viral video shared this week showing a senior MP accepting a large cash payment is an AI-generated deepfake.", "score": "5.0", "claim_types": ["other"]}
+{"sentence_text": "The only way to guarantee a reduction in your household energy bills is to switch to a smart meter before the end of the year.", "score": "3.0", "claim_types": ["prediction"]}
+{"sentence_text": "Over 90% of all small businesses in the North of England have reported a decrease in revenue since the new business tax was introduced.", "score": "4.0", "claim_types": ["quantity"]}
+{"sentence_text": "The new US policy on social media account location is designed to block all foreign political commentary on American issues.", "score": "4.0", "claim_types": ["rules"]}
+{"sentence_text": "Former President Trump stated that he personally brokered the recent peace talks between two major world powers.", "score": "3.0", "claim_types": ["personal"]}
+{"sentence_text": "The UN's latest climate report confirms that global sea levels will rise by an irreversible two meters within the next decade.", "score": "5.0", "claim_types": ["prediction"]}
+{"sentence_text": "You should not be surprised when the local council announces a 25% hike in council tax in the next fiscal announcement.", "score": "2.0", "claim_types": ["not_claim"]}
+{"sentence_text": "The Conservative Party manifesto explicitly promised not to increase national insurance contributions for self-employed workers.", "score": "4.0", "claim_types": ["support"]}
+{"sentence_text": "All major UK supermarkets have agreed to donate at least 15% of their surplus food to local food banks starting next month.", "score": "3.0", "claim_types": ["quantity"]}
+{"sentence_text": "A new law in France makes it illegal for any company to use AI to generate marketing copy without human oversight.", "score": "4.0", "claim_types": ["rules"]}
+{"sentence_text": "If you vote for the independent candidate in the upcoming by-election, your local school will receive an extra £1 million in funding.", "score": "4.0", "claim_types": ["voting"]}
+{"sentence_text": "I heard from a friend that the new universal credit application process takes an average of 14 weeks to complete.", "score": "2.0", "claim_types": ["personal"]}
+{"sentence_text": "The Pentagon has confirmed that the mysterious object sighted over the Pacific was a foreign surveillance drone, not space debris.", "score": "5.0", "claim_types": ["other"]}
+{"sentence_text": "The price of oil is falling because global demand has dropped by more than 10% in the last six weeks.", "score": "4.0", "claim_types": ["correlation"]}
+{"sentence_text": "It is my firm opinion that the opposition leader lacks the necessary international experience to represent Britain on the world stage.", "score": "1.0", "claim_types": ["opinion"]}
+{"sentence_text": "The government has spent over £10 billion on consultancy fees since the beginning of the year, a new record high.", "score": "5.0", "claim_types": ["quantity"]}
+{"sentence_text": "Under the new EU trade agreement, British citizens will no longer require a passport to travel to any member state.", "score": "5.0", "claim_types": ["rules"]}
+{"sentence_text": "Studies have shown that the use of smartphones in schools is directly linked to a 20-point drop in average GCSE scores.", "score": "4.0", "claim_types": ["correlation"]}
+{"sentence_text": "The recent Supreme Court ruling will inevitably lead to a substantial increase in public sector strikes across the country next year.", "score": "4.0", "claim_types": ["prediction"]}
+{"sentence_text": "The US mid-term elections saw a record turnout, with 65% of all eligible voters casting a ballot.", "score": "4.0", "claim_types": ["quantity"]}
+{"sentence_text": "The local mayor's promise to fully pedestrianise the city centre by Christmas is now completely unattainable.", "score": "3.0", "claim_types": ["prediction"]}
+{"sentence_text": "A popular financial guru claimed that all investors should sell their stocks immediately to avoid a major market crash.", "score": "3.0", "claim_types": ["personal"]}
+{"sentence_text": "If you don't register to vote online by the deadline, your ballot will automatically be counted as a spoilt paper.", "score": "5.0", "claim_types": ["voting"]}
+{"sentence_text": "Every person I've spoken to in my town supports the campaign to stop the closure of the local library.", "score": "2.0", "claim_types": ["support"]}
