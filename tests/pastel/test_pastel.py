@@ -1,13 +1,16 @@
 import json
 import tempfile
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import numpy as np
 import pytest
 from pytest import mark, param
 
 from pastel.models import Sentence
-from pastel.pastel import BiasType, Pastel
+from pastel.pastel import BiasType, Pastel, ScoreAndAnswers
+
+# mypy: ignore-errors
+# getting "Untyped decorator makes function ... untyped " so ignoring for now:
 
 Q1 = "Is the statement factual?"
 Q2 = "Does the statement contain bias?"
@@ -15,13 +18,7 @@ Q2 = "Does the statement contain bias?"
 
 @pytest.fixture
 def pastel_instance() -> Pastel:
-    pasteliser = Pastel(
-        {
-            BiasType.BIAS: 1.0,
-            Q1: -3.0,
-            Q2: 2.0,
-        }
-    )
+    pasteliser = Pastel({BiasType.BIAS: 1.0, Q1: -3.0, Q2: 2.0})
     return pasteliser
 
 
@@ -40,7 +37,7 @@ def test_load_file(pastel_instance: Pastel) -> None:
 
 
 def test_make_prompt(pastel_instance: Pastel) -> None:
-    sentence = Sentence("The sky is blue.", tuple("quantity"))
+    sentence = Sentence("The sky is blue.", ())
     prompt = pastel_instance.make_prompt(sentence)
     assert "[QUESTIONS]" not in prompt
     assert "[SENT1]" not in prompt
@@ -51,7 +48,7 @@ def test_make_prompt(pastel_instance: Pastel) -> None:
 
 
 def test_get_scores_from_answers(pastel_instance: Pastel) -> None:
-    answers = [{Q1: 1.0, Q2: 1.0}, {Q1: 0.0, Q2: 1.0}]
+    answers = [{Q1: 1, Q2: 1}, {Q1: 0, Q2: 1}]
     scores = pastel_instance.get_scores_from_answers(answers)
     expected_scores = np.array([0.0, 3.0])
     # [1.0 (=bias) + -3.0*1.0 + 2.0*1 = 0.0 ,
@@ -85,7 +82,7 @@ def test_quantify_answers(pastel_instance: Pastel) -> None:
     side_effect=ValueError("Gemini failed"),
 )
 async def test_retries(mock_run_prompt: AsyncMock, pastel_instance: Pastel) -> None:
-    sentence = Sentence("This is a claim.", tuple("quantity"))
+    sentence = Sentence("This is a claim.", ())
     try:
         await pastel_instance._get_answers_for_single_sentence(sentence)
         assert False
@@ -122,7 +119,7 @@ async def test_retries(mock_run_prompt: AsyncMock, pastel_instance: Pastel) -> N
     ],
 )
 async def test_get_answers_to_questions(
-    sentences: list[Sentence],
+    sentences: list[str],
     return_values: list[dict[str, float] | BaseException],
     expected: dict[str, dict[str, float]],
     pastel_instance: Pastel,
@@ -138,33 +135,97 @@ async def test_get_answers_to_questions(
     "sentences,answers,expected",
     [
         param(
-            ["s1", "s2"],
-            {"s1": {Q1: 0.0, Q2: 1.0}, "s2": {Q1: 0.0, Q2: 0.5}},
-            np.array([3.0, 2.0]),
+            [Sentence("s1", ()), Sentence("s2", ())],
+            {
+                Sentence("s1", ()): {Q1: 0.0, Q2: 1.0},
+                Sentence("s2", ()): {Q1: 0.0, Q2: 0.5},
+            },
+            {
+                Sentence("s1", ()): ScoreAndAnswers(
+                    sentence=Sentence("s1", ()),
+                    score=3.0,
+                    answers={Q1: 0.0, Q2: 1.0},
+                ),
+                Sentence("s2", ()): ScoreAndAnswers(
+                    sentence=Sentence("s2", ()),
+                    score=2.0,
+                    answers={Q1: 0.0, Q2: 0.5},
+                ),
+            },
             id="Normal case",
         ),
         param(
-            ["s1", "s2"],
-            {"s1": {Q1: 0.0, Q2: 1.0}},
-            np.array([3.0, 0.0]),
+            [Sentence("s1", ()), Sentence("s2", ())],
+            {Sentence("s1", ()): {Q1: 0.0, Q2: 1.0}},
+            {
+                Sentence("s1", ()): ScoreAndAnswers(
+                    sentence=Sentence("s1", ()),
+                    score=3.0,
+                    answers={Q1: 0.0, Q2: 1.0},
+                ),
+                Sentence("s2", ()): ScoreAndAnswers(
+                    sentence=Sentence("s2", ()), score=0.0, answers={}
+                ),
+            },
             id="One sentence fails",
         ),
         param(
-            ["s1", "s2"],
+            [Sentence("s1", ()), Sentence("s2", ())],
             {},
-            np.array([0.0, 0.0]),
+            {
+                Sentence("s1", ()): ScoreAndAnswers(
+                    sentence=Sentence("s1", ()), score=0.0, answers={}
+                ),
+                Sentence("s2", ()): ScoreAndAnswers(
+                    sentence=Sentence("s2", ()), score=0.0, answers={}
+                ),
+            },
             id="All sentences fail",
         ),
     ],
 )
-def test_make_predictions(
+async def test_make_predictions(
     sentences: list[str],
     answers: dict[str, dict[str, float]],
-    expected: np.ndarray,
+    expected: dict[str, ScoreAndAnswers],
     pastel_instance: Pastel,
 ):
     with patch.object(
         pastel_instance, "get_answers_to_questions", return_value=answers
     ):
-        predictions = pastel_instance.make_predictions(sentences)
-        assert all(predictions == expected)
+        predictions = await pastel_instance.make_predictions(sentences)
+        assert predictions == expected
+
+
+def test_update_predictions(pastel_instance):
+    sentences = [Sentence(c, ()) for c in ["claim 1", "claim 2", "claim 3"]]
+    old_answers = [{Q1: 1.0, Q2: 0.0}, {Q1: 0.0, Q2: 1.0}, {Q1: 1.0, Q2: 1.0}]
+
+    with (
+        patch.object(
+            pastel_instance,
+            "_get_function_answers_for_single_sentence",
+            return_value={"updated_feature": 1.0},
+        ) as mock_get_func_answers,
+        patch.object(
+            pastel_instance,
+            "get_scores_from_answers",
+            return_value=np.array([1.0, 2.0, 3.0]),
+        ) as mock_get_scores,
+    ):
+        updates = pastel_instance.update_predictions(sentences, old_answers)
+
+        mock_get_func_answers.assert_has_calls(
+            [call(sentence) for sentence in sentences]
+        )
+
+        mock_get_scores.assert_called_once()
+
+        assert len(updates) == len(sentences)
+        for sentence, score, old_answer in zip(sentences, [1.0, 2.0, 3.0], old_answers):
+            assert sentence in updates
+            assert isinstance(updates[sentence], ScoreAndAnswers)
+            assert updates[sentence].sentence == sentence
+            assert updates[sentence].score == score
+            expected_answers = old_answer | {"updated_feature": 1.0}
+            assert updates[sentence].answers == expected_answers
