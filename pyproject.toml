@@ -19,6 +19,7 @@ dependencies = [
     "scipy>=1.15.3",
     "scipy-stubs>=1.15.3.0",
     "types-requests>=2.32.4.20250809",
+    "tenacity>=9.1.2",
 ]
 
 [tool.uv.sources]
