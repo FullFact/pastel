@@ -2,6 +2,7 @@
 long-term caching responses"""
 
 import asyncio
+
 from pastel.models import Sentence
 from pastel.pastel import Pastel
 from training.cached_pastel import CachedPastel

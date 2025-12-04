@@ -1,7 +1,7 @@
+import asyncio
 import copy
 import json
 import tempfile
-import asyncio
 
 from pastel.models import BiasType, Sentence
 from pastel.optimise_weights import learn_weights
