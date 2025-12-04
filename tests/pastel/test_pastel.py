@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 from pytest import mark, param
 
-from pastel.models import Sentence
-from pastel.pastel import BiasType, Pastel, ScoreAndAnswers
+from pastel.models import BiasType, ScoreAndAnswers, Sentence
+from pastel.pastel import Pastel
 
 # mypy: ignore-errors
 # getting "Untyped decorator makes function ... untyped " so ignoring for now:

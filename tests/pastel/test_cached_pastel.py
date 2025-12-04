@@ -1,7 +1,7 @@
 import numpy as np
 
-from pastel.models import Sentence
-from pastel.pastel import FEATURE_TYPE, BiasType, Pastel
+from pastel.models import FEATURE_TYPE, BiasType, Sentence
+from pastel.pastel import Pastel
 from training.cached_pastel import CachedPastel
 
 Q1 = "Is the statement factual?"

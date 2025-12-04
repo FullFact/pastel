@@ -2,9 +2,9 @@ import copy
 import json
 import tempfile
 
-from pastel.models import Sentence
+from pastel.models import BiasType, Sentence
 from pastel.optimise_weights import learn_weights
-from pastel.pastel import BiasType, Pastel
+from pastel.pastel import Pastel
 
 
 def demo_predict(pasteliser: Pastel) -> None:

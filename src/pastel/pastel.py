@@ -2,7 +2,6 @@
 # See paper: https://arxiv.org/abs/2309.07601v3 "Weakly Supervised Veracity Classification with LLM-Predicted Credibility Signals"
 
 import asyncio
-import enum
 import json
 import logging
 from collections.abc import Callable
@@ -13,10 +12,9 @@ import numpy.typing as npt
 import tenacity
 from genai_utils.gemini import run_prompt
 from google.api_core import exceptions as core_exceptions
-from pydantic import BaseModel
 
 from pastel import pastel_functions
-from pastel.models import Sentence
+from pastel.models import FEATURE_TYPE, BiasType, ScoreAndAnswers, Sentence
 
 _logger = logging.getLogger(__name__)
 
@@ -32,28 +30,10 @@ RETRYABLE_EXCEPTIONS = (
 )
 
 
-class BiasType(enum.Enum):
-    """Used as the key for the bias term in Pastel models"""
-
-    BIAS = "BIAS"
-
-
-FEATURE_TYPE: TypeAlias = Callable[[Sentence], float] | str | BiasType
-
-
 def feature_as_string(feature: FEATURE_TYPE) -> str:
     if callable(feature):
         return feature.__name__
     return str(feature)
-
-
-class ScoreAndAnswers(BaseModel):
-    """Used to parse scores for sentences and store the answers to
-    PASTEL questions."""
-
-    sentence: Sentence
-    score: float
-    answers: dict[FEATURE_TYPE, float]
 
 
 def log_retry_attempt(retry_state: tenacity.RetryCallState) -> None:

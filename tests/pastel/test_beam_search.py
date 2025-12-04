@@ -1,6 +1,7 @@
 from unittest.mock import Mock, patch
 
-from pastel.pastel import BiasType, Pastel
+from pastel.models import BiasType
+from pastel.pastel import Pastel
 from training.beam_search import add_one, run_beam_search
 
 
