@@ -37,7 +37,7 @@ def test_load_file(pastel_instance: Pastel) -> None:
 
 
 def test_make_prompt(pastel_instance: Pastel) -> None:
-    sentence = Sentence("The sky is blue.", ())
+    sentence = Sentence("The sky is blue.", tuple("quantity"))
     prompt = pastel_instance.make_prompt(sentence)
     assert "[QUESTIONS]" not in prompt
     assert "[SENT1]" not in prompt
@@ -48,7 +48,7 @@ def test_make_prompt(pastel_instance: Pastel) -> None:
 
 
 def test_get_scores_from_answers(pastel_instance: Pastel) -> None:
-    answers = [{Q1: 1, Q2: 1}, {Q1: 0, Q2: 1}]
+    answers = [{Q1: 1.0, Q2: 1.0}, {Q1: 0.0, Q2: 1.0}]
     scores = pastel_instance.get_scores_from_answers(answers)
     expected_scores = np.array([0.0, 3.0])
     # [1.0 (=bias) + -3.0*1.0 + 2.0*1 = 0.0 ,
@@ -82,7 +82,7 @@ def test_quantify_answers(pastel_instance: Pastel) -> None:
     side_effect=ValueError("Gemini failed"),
 )
 async def test_retries(mock_run_prompt: AsyncMock, pastel_instance: Pastel) -> None:
-    sentence = Sentence("This is a claim.", ())
+    sentence = Sentence("This is a claim.", tuple("quantity"))
     try:
         await pastel_instance._get_answers_for_single_sentence(sentence)
         assert False
@@ -96,22 +96,22 @@ async def test_retries(mock_run_prompt: AsyncMock, pastel_instance: Pastel) -> N
     "sentences,return_values,expected",
     [
         param(
-            [Sentence("s1", ()), Sentence("s2", ())],
+            [Sentence("s1", tuple("quantity")), Sentence("s2", tuple("quantity"))],
             [{Q1: 1.0, Q2: 1.0}, {Q1: 1.0, Q2: 0.0}],
             {
-                Sentence("s1", ()): {Q1: 1.0, Q2: 1.0},
-                Sentence("s2", ()): {Q1: 1.0, Q2: 0.0},
+                Sentence("s1", tuple("quantity")): {Q1: 1.0, Q2: 1.0},
+                Sentence("s2", tuple("quantity")): {Q1: 1.0, Q2: 0.0},
             },
             id="Normal case",
         ),
         param(
-            [Sentence("s1", ()), Sentence("s2", ())],
+            [Sentence("s1", tuple("quantity")), Sentence("s2", tuple("quantity"))],
             [{Q1: 1.0, Q2: 1.0}, ValueError()],
-            {Sentence("s1", ()): {Q1: 1.0, Q2: 1.0}},
+            {Sentence("s1", tuple("quantity")): {Q1: 1.0, Q2: 1.0}},
             id="One sentence fails",
         ),
         param(
-            [Sentence("s1", ()), Sentence("s2", ())],
+            [Sentence("s1", tuple("quantity")), Sentence("s2", tuple("quantity"))],
             [ValueError(), ValueError()],
             {},
             id="All sentences fail",
@@ -135,19 +135,19 @@ async def test_get_answers_to_questions(
     "sentences,answers,expected",
     [
         param(
-            [Sentence("s1", ()), Sentence("s2", ())],
+            [Sentence("s1", tuple("quantity")), Sentence("s2", tuple("quantity"))],
             {
-                Sentence("s1", ()): {Q1: 0.0, Q2: 1.0},
-                Sentence("s2", ()): {Q1: 0.0, Q2: 0.5},
+                Sentence("s1", tuple("quantity")): {Q1: 0.0, Q2: 1.0},
+                Sentence("s2", tuple("quantity")): {Q1: 0.0, Q2: 0.5},
             },
             {
-                Sentence("s1", ()): ScoreAndAnswers(
-                    sentence=Sentence("s1", ()),
+                Sentence("s1", tuple("quantity")): ScoreAndAnswers(
+                    sentence=Sentence("s1", tuple("quantity")),
                     score=3.0,
                     answers={Q1: 0.0, Q2: 1.0},
                 ),
-                Sentence("s2", ()): ScoreAndAnswers(
-                    sentence=Sentence("s2", ()),
+                Sentence("s2", tuple("quantity")): ScoreAndAnswers(
+                    sentence=Sentence("s2", tuple("quantity")),
                     score=2.0,
                     answers={Q1: 0.0, Q2: 0.5},
                 ),
@@ -155,29 +155,29 @@ async def test_get_answers_to_questions(
             id="Normal case",
         ),
         param(
-            [Sentence("s1", ()), Sentence("s2", ())],
-            {Sentence("s1", ()): {Q1: 0.0, Q2: 1.0}},
+            [Sentence("s1", tuple("quantity")), Sentence("s2", tuple("quantity"))],
+            {Sentence("s1", tuple("quantity")): {Q1: 0.0, Q2: 1.0}},
             {
-                Sentence("s1", ()): ScoreAndAnswers(
-                    sentence=Sentence("s1", ()),
+                Sentence("s1", tuple("quantity")): ScoreAndAnswers(
+                    sentence=Sentence("s1", tuple("quantity")),
                     score=3.0,
                     answers={Q1: 0.0, Q2: 1.0},
                 ),
-                Sentence("s2", ()): ScoreAndAnswers(
-                    sentence=Sentence("s2", ()), score=0.0, answers={}
+                Sentence("s2", tuple("quantity")): ScoreAndAnswers(
+                    sentence=Sentence("s2", tuple("quantity")), score=0.0, answers={}
                 ),
             },
             id="One sentence fails",
         ),
         param(
-            [Sentence("s1", ()), Sentence("s2", ())],
+            [Sentence("s1", tuple("quantity")), Sentence("s2", tuple("quantity"))],
             {},
             {
-                Sentence("s1", ()): ScoreAndAnswers(
-                    sentence=Sentence("s1", ()), score=0.0, answers={}
+                Sentence("s1", tuple("quantity")): ScoreAndAnswers(
+                    sentence=Sentence("s1", tuple("quantity")), score=0.0, answers={}
                 ),
-                Sentence("s2", ()): ScoreAndAnswers(
-                    sentence=Sentence("s2", ()), score=0.0, answers={}
+                Sentence("s2", tuple("quantity")): ScoreAndAnswers(
+                    sentence=Sentence("s2", tuple("quantity")), score=0.0, answers={}
                 ),
             },
             id="All sentences fail",
@@ -198,7 +198,9 @@ async def test_make_predictions(
 
 
 def test_update_predictions(pastel_instance):
-    sentences = [Sentence(c, ()) for c in ["claim 1", "claim 2", "claim 3"]]
+    sentences = [
+        Sentence(c, tuple("quantity")) for c in ["claim 1", "claim 2", "claim 3"]
+    ]
     old_answers = [{Q1: 1.0, Q2: 0.0}, {Q1: 0.0, Q2: 1.0}, {Q1: 1.0, Q2: 1.0}]
 
     with (
