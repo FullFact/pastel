@@ -6,14 +6,14 @@ import numpy as np
 import pytest
 from pytest import mark, param
 
-from pastel.models import BiasType, ScoreAndAnswers, Sentence
+from pastel.models import FEATURE_TYPE, BiasType, ScoreAndAnswers, Sentence
 from pastel.pastel import Pastel
 
 # mypy: ignore-errors
 # getting "Untyped decorator makes function ... untyped " so ignoring for now:
 
-Q1 = "Is the statement factual?"
-Q2 = "Does the statement contain bias?"
+Q1: FEATURE_TYPE = "Is the statement factual?"
+Q2: FEATURE_TYPE = "Does the statement contain bias?"
 
 
 @pytest.fixture
@@ -59,7 +59,7 @@ def test_get_scores_from_answers(pastel_instance: Pastel) -> None:
 def test_get_scores_from_answers_no_weights(pastel_instance: Pastel) -> None:
     for k in pastel_instance.model.keys():
         pastel_instance.model[k] = 0.0
-    answers = [{Q1: 1, Q2: 1}, {Q1: 0, Q2: 1}]
+    answers = [{Q1: 1.0, Q2: 1.0}, {Q1: 0.0, Q2: 1.0}]
     with pytest.raises(ValueError):
         pastel_instance.get_scores_from_answers(answers)
 
@@ -119,9 +119,9 @@ async def test_retries(mock_run_prompt: AsyncMock, pastel_instance: Pastel) -> N
     ],
 )
 async def test_get_answers_to_questions(
-    sentences: list[str],
+    sentences: list[Sentence],
     return_values: list[dict[str, float] | BaseException],
-    expected: dict[str, dict[str, float]],
+    expected: dict[Sentence, dict[str, float]],
     pastel_instance: Pastel,
 ):
     with patch.object(
@@ -185,9 +185,9 @@ async def test_get_answers_to_questions(
     ],
 )
 async def test_make_predictions(
-    sentences: list[str],
+    sentences: list[Sentence],
     answers: dict[str, dict[str, float]],
-    expected: dict[str, ScoreAndAnswers],
+    expected: dict[Sentence, ScoreAndAnswers],
     pastel_instance: Pastel,
 ):
     with patch.object(

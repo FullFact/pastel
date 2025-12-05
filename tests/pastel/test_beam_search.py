@@ -6,7 +6,7 @@ from training.beam_search import add_one, run_beam_search
 
 
 def test_add_one():
-    current_set = set(["a", "b"])
+    current_set = frozenset(["a", "b"])
     all_features = ["a", "b", "c", "d"]
     new_sets = add_one(current_set, all_features)
     print(new_sets)
@@ -17,7 +17,7 @@ def test_add_one():
 
 
 def test_add_one_empty_set():
-    current_set = set()
+    current_set = frozenset()
     all_features = ["a", "b"]
     new_sets = add_one(current_set, all_features)
     assert len(new_sets) == 2
