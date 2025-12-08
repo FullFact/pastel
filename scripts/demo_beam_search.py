@@ -12,7 +12,7 @@ def get_functions() -> list[str]:
 
 
 def get_questions(use_all_from_db: bool = False) -> list[str]:
-    """Either load all available questions from the local cached-pastel databse
+    """Either load all available questions from the local cached-pastel database
     or return a sample."""
     if use_all_from_db:
         db = DatabaseManager()

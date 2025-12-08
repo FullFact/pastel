@@ -15,9 +15,9 @@ import numpy as np
 from sklearn.metrics import f1_score, precision_score, recall_score  # type: ignore
 from sklearn.model_selection import train_test_split  # type: ignore
 
-from pastel.models import Sentence
+from pastel.models import FEATURE_TYPE, BiasType, Sentence
 from pastel.optimise_weights import lin_reg
-from pastel.pastel import EXAMPLES_TYPE, FEATURE_TYPE, BiasType, Pastel
+from pastel.pastel import EXAMPLES_TYPE, Pastel
 from training.cached_pastel import CachedPastel
 
 

@@ -1,10 +1,11 @@
+import asyncio
 import copy
 import json
 import tempfile
 
-from pastel.models import Sentence
+from pastel.models import BiasType, Sentence
 from pastel.optimise_weights import learn_weights
-from pastel.pastel import BiasType, Pastel
+from pastel.pastel import Pastel
 
 
 def demo_predict(pasteliser: Pastel) -> None:
@@ -22,9 +23,8 @@ def demo_predict(pasteliser: Pastel) -> None:
     ]
     examples = [Sentence(t, tuple(["quantity"])) for t in texts]
 
-    scores = pasteliser.make_predictions(examples)
-    # _ = [print(f"{s:4.1f} \t{e}") for s, e in sorted(zip(scores, examples))]
-    _ = [print(f"{s:4.1f} \t{e}") for s, e in zip(scores, examples)]
+    scores = asyncio.run(pasteliser.make_predictions(examples))
+    _ = [print(f"{scores[e].score:4.1f} \t{e.sentence_text}") for e in examples]
 
 
 def demo_learn(pasteliser: Pastel) -> Pastel:

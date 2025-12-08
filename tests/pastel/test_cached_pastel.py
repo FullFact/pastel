@@ -1,7 +1,7 @@
 import numpy as np
 
-from pastel.models import Sentence
-from pastel.pastel import FEATURE_TYPE, BiasType, Pastel
+from pastel.models import FEATURE_TYPE, BiasType, Sentence
+from pastel.pastel import Pastel
 from training.cached_pastel import CachedPastel
 
 Q1 = "Is the statement factual?"
@@ -19,9 +19,9 @@ class DummyPastel(Pastel):
         super().__init__(questions)
 
     async def get_answers_to_questions(
-        self, sentences: list[str]
-    ) -> dict[str, dict[FEATURE_TYPE, float]]:
-        return {s: 1.0 for s in sentences}
+        self, sentences: list[Sentence]
+    ) -> dict[Sentence, dict[FEATURE_TYPE, float]]:
+        return {s: {Q1: 1.0} for s in sentences}
 
     # def make_predictions(self, sentences):
     #     answers = self.get_answers_to_questions(sentences)

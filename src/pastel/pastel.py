@@ -2,11 +2,10 @@
 # See paper: https://arxiv.org/abs/2309.07601v3 "Weakly Supervised Veracity Classification with LLM-Predicted Credibility Signals"
 
 import asyncio
-import enum
 import json
 import logging
 from collections.abc import Callable
-from typing import Dict, Sequence, Tuple, TypeAlias
+from typing import Sequence, Tuple, TypeAlias
 
 import numpy as np
 import numpy.typing as npt
@@ -15,7 +14,7 @@ from genai_utils.gemini import run_prompt
 from google.api_core import exceptions as core_exceptions
 
 from pastel import pastel_functions
-from pastel.models import Sentence
+from pastel.models import FEATURE_TYPE, BiasType, ScoreAndAnswers, Sentence
 
 _logger = logging.getLogger(__name__)
 
@@ -29,15 +28,6 @@ RETRYABLE_EXCEPTIONS = (
     core_exceptions.DeadlineExceeded,
     ValueError,
 )
-
-
-class BiasType(enum.Enum):
-    """Used as the key for the bias term in Pastel models"""
-
-    BIAS = "BIAS"
-
-
-FEATURE_TYPE: TypeAlias = Callable[[Sentence], float] | str | BiasType
 
 
 def feature_as_string(feature: FEATURE_TYPE) -> str:
@@ -170,28 +160,28 @@ class Pastel:
     def make_prompt(self, sentence: Sentence) -> str:
         """Makes a prompt for a single given sentence."""
 
+        questions = self.get_questions()
+
         prompt = """
-    Your task is to answer a series of questions about a sentence. Ensure your answers are truthful and reliable.
-    You are expected to answer with ‘Yes’ or ‘No’ but you are also allowed to answer with ‘Unsure’ if you do not
-    have enough information or context to provide a reliable answer.
-    Your response should be limited to the question number and yes/no/unsure.
-    Example output:
-    0. Yes
-    1. Yes
-    2. No
+Your task is to answer a series of questions about a sentence. Ensure your answers are truthful and reliable.
+You are expected to answer with ‘Yes’ or ‘No’ but you are also allowed to answer with ‘Unsure’ if you do not
+have enough information or context to provide a reliable answer.
+Your response should be limited to the question number and yes/no/unsure.
+Example output:
+0. Yes
+1. Yes
+2. No
 
-    Here are the questions:
-    [QUESTIONS]
+Here are the questions:
+[QUESTIONS]
 
-    Here is the sentence: ```[SENT1]```
+Here is the sentence: ```[SENT1]```
 
-    """
+"""
         # extract the PastelFeatures whose type is string
         prompt = prompt.replace(
             "[QUESTIONS]",
-            "\n".join(
-                [f"Question {idx} {q}" for idx, q in enumerate(self.get_questions())]
-            ),
+            "\n".join([f"Question {idx} {q}" for idx, q in enumerate(questions)]),
         )
         prompt = prompt.replace("[SENT1]", sentence.sentence_text)
 
@@ -211,11 +201,11 @@ class Pastel:
         retry=tenacity.retry_if_exception_type(RETRYABLE_EXCEPTIONS),
         before=log_retry_attempt,
     )
-    async def _get_answers_for_single_sentence(
+    async def _get_llm_answers_for_single_sentence(
         self, sentence: Sentence
     ) -> dict[FEATURE_TYPE, float]:
-        sent_answers: Dict[FEATURE_TYPE, float] = {}
-        # First, get answers to all the questions from genAI:
+        """Runs all genAI questions on the given sentence."""
+        sent_answers: dict[FEATURE_TYPE, float] = {}
         prompt = self.make_prompt(sentence)
         raw_output = run_prompt(prompt)
         raw_output = raw_output.strip().lower()
@@ -233,16 +223,33 @@ class Pastel:
             raise ValueError(
                 f"Failed to parse output for the sentence: {sentence.sentence_text}. Output received: {output}"
             )
-        # Second, get values from the functions
+        return sent_answers
+
+    def _get_function_answers_for_single_sentence(
+        self, sentence: Sentence
+    ) -> dict[FEATURE_TYPE, float]:
+        """Runs all the functions in the model on the given sentence."""
+        sent_answers: dict[FEATURE_TYPE, float] = {}
         for f in self.get_functions():
             sent_answers[f] = f(sentence)
-
         return sent_answers
+
+    async def _get_answers_for_single_sentence(
+        self, sentence: Sentence
+    ) -> dict[FEATURE_TYPE, float]:
+        # First, get answers to all the questions from genAI:
+        llm_sent_answers = await self._get_llm_answers_for_single_sentence(sentence)
+
+        # Second, get values from the functions
+        function_sent_answers = self._get_function_answers_for_single_sentence(sentence)
+
+        return llm_sent_answers | function_sent_answers
 
     async def get_answers_to_questions(
         self, sentences: list[Sentence]
     ) -> dict[Sentence, dict[FEATURE_TYPE, float]]:
-        """Embed each example into the prompt and pass to genAI.
+        """Embed each example into the prompt and pass to genAI, then
+        get answers for non-genAI functions.
         For each sentence, this Returns a dictionary mapping features to scores."""
 
         jobs = [
@@ -299,10 +306,13 @@ class Pastel:
         scores = X.dot(weights)
         return scores
 
-    def make_predictions(self, sentences: list[Sentence]) -> ARRAY_TYPE:
+    async def make_predictions(
+        self, sentences: list[Sentence]
+    ) -> dict[Sentence, ScoreAndAnswers]:
         """Use the Pastel questions and weights model to generate
-        a score for each of a list of sentences."""
-        answers = asyncio.run(self.get_answers_to_questions(sentences))
+        a score for each of a list of sentences. Return this along with
+        the questions and their scores."""
+        answers = await self.get_answers_to_questions(sentences)
         if answers:
             scores = self.get_scores_from_answers(list(answers.values()))
         else:
@@ -310,10 +320,44 @@ class Pastel:
 
         scores_dict = {}
         for sentence, score in zip(answers.keys(), scores):
-            scores_dict[sentence] = float(score)
+            scores_dict[sentence.sentence_text] = float(score)
 
         for sentence in sentences:
-            if sentence not in scores_dict:
-                scores_dict[sentence] = 0.0
+            if sentence.sentence_text not in scores_dict:
+                scores_dict[sentence.sentence_text] = 0.0
+            if sentence not in answers.keys():
+                answers[sentence] = {}
 
-        return np.array([scores_dict[sentence] for sentence in sentences])
+        return {
+            sentence: ScoreAndAnswers(
+                sentence=sentence,
+                score=scores_dict[sentence.sentence_text],
+                answers=answers[sentence],
+            )
+            for sentence in sentences
+        }
+
+    def update_predictions(
+        self, sentences: list[Sentence], old_answers: list[dict[FEATURE_TYPE, float]]
+    ) -> dict[Sentence, ScoreAndAnswers]:
+        """Takes a list of sentences and their original LLM and function answers,
+        then re-runs the functions only and updates the scores with these new answers.
+        Returns ScoresAndAnswers for each sentence as before."""
+        new_answers = [
+            self._get_function_answers_for_single_sentence(sentence)
+            for sentence in sentences
+        ]
+        updated_answers = [old | new for old, new in zip(old_answers, new_answers)]
+        updated_scores = self.get_scores_from_answers(updated_answers)
+
+        updated_scores_and_answers = {
+            sentence: ScoreAndAnswers(
+                sentence=sentence,
+                score=score,
+                answers=answers,
+            )
+            for sentence, score, answers in zip(
+                sentences, updated_scores, updated_answers
+            )
+        }
+        return updated_scores_and_answers

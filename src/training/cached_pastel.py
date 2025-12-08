@@ -5,8 +5,8 @@ This is useful for local experiments etc. but shouldn't be used (or useful) in p
 import logging
 from typing import List, Optional, Set, Tuple
 
-from pastel.models import Sentence
-from pastel.pastel import ARRAY_TYPE, FEATURE_TYPE, BiasType, Pastel, feature_as_string
+from pastel.models import FEATURE_TYPE, BiasType, Sentence
+from pastel.pastel import ARRAY_TYPE, Pastel, feature_as_string
 from training.db_manager import DatabaseManager
 
 _logger = logging.getLogger(__name__)

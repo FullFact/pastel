@@ -243,7 +243,7 @@ wheels = [
 [[package]]
 name = "genai-utils"
 version = "0.0.1"
-source = { git = "ssh://git@github.com/FullFact/genai-utils.git?tag=5.0.0#0a689e2a20bd32e09f1bb0d0543e2ba969392965" }
+source = { git = "https://github.com/FullFact/genai-utils.git?tag=5.0.0#0a689e2a20bd32e09f1bb0d0543e2ba969392965" }
 dependencies = [
     { name = "google-cloud-core" },
     { name = "google-genai" },
@@ -683,6 +683,7 @@ dependencies = [
     { name = "scipy", version = "1.16.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "scipy-stubs", version = "1.15.3.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy-stubs", version = "1.16.3.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "tenacity" },
     { name = "types-requests" },
 ]
 
@@ -699,12 +700,13 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "genai-utils", git = "ssh://git@github.com/FullFact/genai-utils.git?tag=5.0.0" },
+    { name = "genai-utils", git = "https://github.com/FullFact/genai-utils.git?tag=5.0.0" },
     { name = "google-cloud-core", specifier = ">=2.4.3" },
     { name = "pydantic", specifier = ">=2.11.7" },
     { name = "scikit-learn", specifier = ">=1.7.1" },
     { name = "scipy", specifier = ">=1.15.3" },
     { name = "scipy-stubs", specifier = ">=1.15.3.0" },
+    { name = "tenacity", specifier = ">=9.1.2" },
     { name = "types-requests", specifier = ">=2.32.4.20250809" },
 ]
 

@@ -1,6 +1,8 @@
 """Simple demo of cached pastel: Using a pastel model with a local database for
 long-term caching responses"""
 
+import asyncio
+
 from pastel.models import Sentence
 from pastel.pastel import Pastel
 from training.cached_pastel import CachedPastel
@@ -30,11 +32,11 @@ if __name__ == "__main__":
     cached_pastel.display_model()
 
     # Use cached_pastel exactly the same as Pastel (which it extends:)
-    scores = cached_pastel.make_predictions(test_sentences)
-    _ = [print(f"{s:4.1f} \t{e.sentence_text}") for s, e in zip(scores, test_sentences)]
+    scores = asyncio.run(cached_pastel.make_predictions(test_sentences))
+    _ = [print(f"{scores[e].score:4.1f} \t{e.sentence_text}") for e in test_sentences]
 
     print("-" * 100)
 
     # second pass of same sentences will make zero calls to Gemini
-    scores = cached_pastel.make_predictions(test_sentences)
-    _ = [print(f"{s:4.1f} \t{e.sentence_text}") for s, e in zip(scores, test_sentences)]
+    scores = asyncio.run(cached_pastel.make_predictions(test_sentences))
+    _ = [print(f"{scores[e].score:4.1f} \t{e.sentence_text}") for e in test_sentences]
