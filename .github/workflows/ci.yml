@@ -64,6 +64,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           release_branches: main
           pre_release_branches: dev
+          tag_prefix: ''
 
       - name: Create a GitHub release
         uses: ncipollo/release-action@v1
