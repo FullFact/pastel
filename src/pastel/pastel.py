@@ -10,7 +10,7 @@ from typing import Sequence, Tuple, TypeAlias
 import numpy as np
 import numpy.typing as npt
 import tenacity
-from genai_utils.gemini import run_prompt
+from genai_utils.gemini import run_prompt_async
 from google.api_core import exceptions as core_exceptions
 
 from pastel import pastel_functions
@@ -207,7 +207,7 @@ Here is the sentence: ```[SENT1]```
         """Runs all genAI questions on the given sentence."""
         sent_answers: dict[FEATURE_TYPE, float] = {}
         prompt = self.make_prompt(sentence)
-        raw_output = run_prompt(prompt)
+        raw_output = await run_prompt_async(prompt)
         raw_output = raw_output.strip().lower()
         if "question" in raw_output:
             output = raw_output[raw_output.index("0") :]
