@@ -78,7 +78,7 @@ def test_quantify_answers(pastel_instance: Pastel) -> None:
 
 
 @patch(
-    "pastel.pastel.run_prompt",
+    "pastel.pastel.run_prompt_async",
     side_effect=ValueError("Gemini failed"),
 )
 async def test_retries(mock_run_prompt: AsyncMock, pastel_instance: Pastel) -> None:
