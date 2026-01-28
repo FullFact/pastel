@@ -1,6 +1,10 @@
 # PASTEL
 
-This is a concept from Sheffield University, where the prompt consists of a series of yes/no questions. The answers to these questions, in the context of a piece of text, are then combined into a single score using a linear regression model.
+This is a concept from Sheffield University[1], where the prompt consists of a series of yes/no questions. The answers to these questions, in the context of a piece of text, are then combined into a single score using a linear regression model. 
+
+At Full Fact, this approach is used to help identify claims that are worth bringing to the attention of professional fact checkers. That model includes questions such as "Could believing this claim harm someone's health?" and "Is this sentence likely to be believed by many people?".
+
+### Code overview
 
 The `pastel/optimise_weights.py` module calculates the parameters of the regression model, and requires a list of sentences with associated checkworthy scores. 
 
@@ -26,3 +30,6 @@ If you don't want to manually specify the config of Gemini, you should set the f
 An example data file, `data/example_training_data.jsonl` is provided so tests and demos can run.
 Note that this was generated using Gemini and for copyright reasons is not real news media.
 Please provide your own examples.
+
+### Citation
+[1] Leite, J. A., Razuvayevskaya, O., Bontcheva, K., & Scarton, C. (2025). [Weakly supervised veracity classification with LLM-predicted credibility signals](https://arxiv.org/abs/2309.07601). EPJ Data Science, 14(1), 16.
