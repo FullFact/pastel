@@ -146,7 +146,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--input",
-        default="/Users/davidcorney/fullfact/data-science-scripts/data/elastic_searcher/fullfact-2026-03-31-claims.jsonl",
+        default="scripts/encoder_experiment/fullfact-2026-03-31-claims.jsonl",
         help="Path to input file (.json FullFact claims export or .jsonl pastel training format)",
     )
     parser.add_argument(
