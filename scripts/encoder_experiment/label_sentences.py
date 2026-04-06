@@ -31,6 +31,8 @@ from questions import QUESTIONS
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logging.getLogger("google.ai.generativelanguage").setLevel(logging.WARNING)
+# supress noisy messages "AFC is enabled with max remote calls: 10.":
+logging.getLogger("google_genai.models").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -206,8 +208,10 @@ async def main() -> None:
         logger.info(
             "  Written %d records (total so far: %d)", len(records), total_written
         )
-        if i >= 5:
-            break
+        # not sure if needed; might reduce rate limits/threading errors:
+        await asyncio.sleep(1.0)
+        # if i >= 200:
+        #     break
 
     logger.info("Done. %d sentences labelled -> %s", total_written, output_path)
     # Allow gRPC background threads (used by the Gemini client) to drain

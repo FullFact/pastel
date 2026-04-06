@@ -53,7 +53,7 @@ MODELS: dict[str, str] = {
 }
 
 RANDOM_SEED = 42
-MAX_LENGTH = 128
+MAX_LENGTH = 128  # 128 is enough for c.95% of sentences; 256 would cover them all
 TEST_FRACTION = 0.2
 
 
