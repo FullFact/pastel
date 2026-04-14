@@ -95,15 +95,11 @@ class Pastel:
         return Pastel(new_model)
 
     @staticmethod
-    def load_model(model_file: str) -> "Pastel":
-        """Load model from JSON file. Convert any functions in the model
-        from their names to Callable functions."""
-
-        with open(model_file, "rt", encoding="utf-8") as json_in:
-            model_json = json.load(json_in)
+    def from_dict(model_dict: dict[str, float]) -> "Pastel":
+        "Create model from a map of features to weights"
         # replace function names with function objects found in pastel_functions module
         new_model = {}
-        for feature, weight in model_json.items():
+        for feature, weight in model_dict.items():
             if feature in pastel_functions.__all__:
                 new_model[getattr(pastel_functions, feature)] = weight
             elif feature == "bias":
@@ -112,6 +108,15 @@ class Pastel:
                 new_model[feature] = weight
 
         return Pastel(new_model)
+
+    @staticmethod
+    def load_model(model_file: str) -> "Pastel":
+        """Load model from JSON file. Convert any functions in the model
+        from their names to Callable functions."""
+
+        with open(model_file, "rt", encoding="utf-8") as json_in:
+            model_json = json.load(json_in)
+        return Pastel.from_dict(model_json)
 
     def save_model(self, model_path: str) -> None:
         """
@@ -250,7 +255,7 @@ Here is the sentence: ```[SENT1]```
     ) -> dict[Sentence, dict[FEATURE_TYPE, float]]:
         """Embed each example into the prompt and pass to genAI, then
         get answers for non-genAI functions.
-        For each sentence, this Returns a dictionary mapping features to scores."""
+        For each sentence, this returns a dictionary mapping features to scores."""
 
         jobs = [
             self._get_answers_for_single_sentence(sentence) for sentence in sentences
