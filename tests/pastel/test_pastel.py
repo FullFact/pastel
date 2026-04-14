@@ -36,6 +36,14 @@ def test_load_file(pastel_instance: Pastel) -> None:
     assert loaded.model == pastel_instance.model
 
 
+def test_model_from_dict():
+    model_dict = {"bias": 1.0, "question_0?": 2.0, "is_claim_type_personal": 3.0}
+    model = Pastel.from_dict(model_dict)
+    assert model.get_bias() == 1.0
+    assert len(model.get_functions()) == 1
+    assert len(model.get_questions()) == 1
+
+
 def test_make_prompt(pastel_instance: Pastel) -> None:
     sentence = Sentence("The sky is blue.", tuple("quantity"))
     prompt = pastel_instance.make_prompt(sentence)
