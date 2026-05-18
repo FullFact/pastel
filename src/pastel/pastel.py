@@ -207,8 +207,10 @@ Here is the sentence: ```[SENT1]```
         """Runs all genAI questions on the given sentence."""
         sent_answers: dict[FEATURE_TYPE, float] = {}
         prompt = self.make_prompt(sentence)
+
         raw_output = await run_prompt_async(prompt)
         raw_output = raw_output.strip().lower()
+
         if "question" in raw_output:
             output = raw_output[raw_output.index("0") :]
         else:

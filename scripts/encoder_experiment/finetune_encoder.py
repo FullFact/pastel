@@ -9,7 +9,9 @@ Trains three models on binary yes/no classification for each question:
 Each model is fine-tuned separately for each question (NLI-style: input = question + sentence).
 Results are written to a CSV and a summary table is printed to stdout.
 
-Dependencies (install manually, not in pyproject.toml):
+Dependencies for local fine-tuning:
+    uv sync --group ml-labeller
+or
     pip install "transformers>=4.40" datasets torch accelerate scikit-learn
 
 Usage:
@@ -59,6 +61,7 @@ TEST_FRACTION = 0.2
 
 @dataclass
 class QuestionDataset:
+    # set of training data for one Pastel question
     question: str
     inputs: list[str]
     labels: list[int]

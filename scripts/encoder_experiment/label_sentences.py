@@ -1,13 +1,16 @@
-# Claude-created
+# Claude-created script
 """Script 1: Use Gemini (via Pastel) to label sentences with yes/no answers to a fixed question list.
 
 Output is a JSONL file with one record per sentence, each containing a `question_answers` dict.
 The script is restart-safe: sentences already written to the output file are skipped.
 
 Supports two input formats (auto-detected by file extension):
-  - .jsonl  pastel training format: {"sentence_text": ..., "score": ..., "claim_types": [...]}
+  - .jsonl  Pastel training format: {"sentence_text": ..., "score": ..., "claim_types": [...]}
   - .json   FullFact claims export:  [{"sentence": {"text": ..., "claim_type": [...],
                                         "checkworthiness": {"fullfact": {...}}}, ...}]
+
+Outputs JSONL file, one sentence per line, e.g:
+{"sentence_text": ..., "score": 5.0, "claim_types": ["quantity"], "question_answers": {"Is this making a claim that is too good to be true?": 1.0, ...}}
 
 Usage:
     python scripts/encoder_experiment/label_sentences.py \\
@@ -37,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 
 def load_fullfact_claims(filename: str) -> list[dict]:
-    """Load the FullFact claims JSON export (a JSON array of article/sentence objects).
+    """Load the Full Fact claims JSON export (a JSON array of article/sentence objects).
 
     Maps to the same internal format as load_examples():
       {"sentence_text": ..., "score": ..., "claim_types": [...]}
