@@ -26,11 +26,11 @@ import logging
 import sys
 from pathlib import Path
 
+from local_models.questions import QUESTIONS
+
 from pastel.models import BiasType, Sentence
 from pastel.optimise_weights import load_examples
 from pastel.pastel import Pastel
-
-from questions import QUESTIONS
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logging.getLogger("google.ai.generativelanguage").setLevel(logging.WARNING)

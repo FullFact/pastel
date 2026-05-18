@@ -14,21 +14,23 @@ Dependencies for local fine-tuning:
 or
     pip install "transformers>=4.40" datasets torch accelerate scikit-learn
 
-Usage:
-    python scripts/encoder_experiment/finetune_encoder.py \\
-        --input scripts/encoder_experiment/labelled_sentences.jsonl \\
-        --output-dir scripts/encoder_experiment/results
 """
 
-import argparse
 import csv
 import json
 import logging
+import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
+import datasets  # noqa: F401
 import numpy as np
+
+# import transformers  # noqa: F401
+from transformers import AutoTokenizer
+
+from local_models.questions import QUESTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +234,8 @@ def train_one_model(
         TrainingArguments,
     )
 
+    """Train an encoder model to answer true/false questions"""
+
     checkpoint_dir = output_dir / model_key / question_label
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -284,17 +288,16 @@ def auto_detect_device() -> str:
     return "cpu"
 
 
-def run_experiment(
+def train_all_models(
     question_datasets: list[QuestionDataset],
     output_dir: Path,
     epochs: int,
     batch_size: int,
     lr: float,
     save_checkpoints: bool,
-    questions: list[str],
     csv_path: Path,
 ) -> list[ModelResult]:
-    from transformers import AutoTokenizer
+    """For each question, load the annotated dataset then train a local transformer model"""
 
     results: list[ModelResult] = []
 
@@ -319,7 +322,7 @@ def run_experiment(
 
             train_ds = tokenise_dataset(train_qd, tokenizer)
             test_ds = tokenise_dataset(test_qd, tokenizer)
-
+            print(f"Training q {q_idx} ")
             try:
                 metrics, elapsed = train_one_model(
                     model_key=model_key,
@@ -432,63 +435,15 @@ def print_summary_table(results: list[ModelResult]) -> None:
     print("=" * 70 + "\n")
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--input",
-        default="scripts/encoder_experiment/labelled_sentences.jsonl",
-        help="Path to labelled JSONL from label_sentences.py",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default="scripts/encoder_experiment/results",
-        help="Directory for model checkpoints and results CSV",
-    )
-    parser.add_argument(
-        "--epochs", type=int, default=3, help="Training epochs (default: 3)"
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=16,
-        help="Per-device batch size (default: 16)",
-    )
-    parser.add_argument(
-        "--lr",
-        type=float,
-        default=2e-5,
-        help="Learning rate (default: 2e-5)",
-    )
-    parser.add_argument(
-        "--no-save",
-        action="store_true",
-        help="Skip saving model checkpoints",
-    )
-    parser.add_argument(
-        "--device",
-        default=None,
-        help="Device override: 'cpu', 'cuda', 'mps' (default: auto-detect)",
-    )
-    return parser.parse_args()
-
-
 def main() -> None:
-    # Defer heavy imports to here so --help works without torch installed
-    try:
-        import datasets  # noqa: F401
-        import torch
-        import transformers  # noqa: F401
-    except ImportError as e:
-        logger.error(
-            "Missing dependency: %s\n"
-            "Install with: pip install 'transformers>=4.40' datasets torch accelerate scikit-learn",
-            e,
-        )
-        raise SystemExit(1)
 
-    args = parse_args()
-    input_path = Path(args.input)
-    output_dir = Path(args.output_dir)
+    input_path = Path("data/local_models/labelled_sentences.jsonl")
+    output_dir = Path("data/local_models/models")
+    epochs = 3
+    batch_size = 16
+    lr = 2e-5
+    save_checkpoints = True
+
     output_dir.mkdir(parents=True, exist_ok=True)
     setup_logging(output_dir)
 
@@ -496,14 +451,11 @@ def main() -> None:
         logger.error("Input file not found: %s", input_path)
         raise SystemExit(1)
 
-    device = args.device or auto_detect_device()
+    device = auto_detect_device()
     logger.info("Using device: %s", device)
     if device != "cpu":
-        import os
 
         os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
-
-    from questions import QUESTIONS
 
     records = load_labelled_data(input_path)
     question_datasets = build_question_datasets(records, QUESTIONS)
@@ -511,14 +463,13 @@ def main() -> None:
     csv_path = output_dir / "results.csv"
     init_results_csv(csv_path)
 
-    results = run_experiment(
+    results = train_all_models(
         question_datasets=question_datasets,
         output_dir=output_dir,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        lr=args.lr,
-        save_checkpoints=not args.no_save,
-        questions=QUESTIONS,
+        epochs=epochs,
+        batch_size=batch_size,
+        lr=lr,
+        save_checkpoints=save_checkpoints,
         csv_path=csv_path,
     )
 

@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from questions import QUESTIONS
+from local_models.questions import QUESTIONS
 
 MODELS: dict[str, str] = {
     "ModernBERT-multilingual": "jhu-clsp/mmBERT-base",
@@ -12,6 +12,7 @@ MODELS: dict[str, str] = {
 
 MODEL_CATEGORY = "ModernBERT-multilingual"
 RESULTS_DIR = Path(__file__).parent / "results"
+MODELS_DIR = Path("data/local_models/models")
 MAX_LENGTH = 128
 
 _model_cache: dict[int, tuple] = {}
@@ -21,7 +22,7 @@ def _load_model_for_question(question_index: int) -> tuple:
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
     question_label = f"q{question_index:02d}"
-    checkpoint_dir = RESULTS_DIR / MODEL_CATEGORY / question_label
+    checkpoint_dir = MODELS_DIR / MODEL_CATEGORY / question_label
 
     checkpoints = sorted(
         checkpoint_dir.glob("checkpoint-*"),
