@@ -1,13 +1,8 @@
 # Claude-created
-"""Script 2: Fine-tune encoder-only LLMs on the labelled data from label_sentences.py.
+"""Fine-tune encoder-only LLMs on labelled data.
 
-Trains three models on binary yes/no classification for each question:
-  - ModernBERT-base-multilingual  (answerdotai/ModernBERT-base-multilingual)
-  - mDeBERTa-v3-base              (microsoft/mdeberta-v3-base)
-  - XLM-RoBERTa-base              (xlm-roberta-base)
 
 Each model is fine-tuned separately for each question (NLI-style: input = question + sentence).
-Results are written to a CSV and a summary table is printed to stdout.
 
 Dependencies for local fine-tuning:
     uv sync --group ml-labeller
@@ -24,10 +19,11 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import datasets  # noqa: F401
+# import datasets  # noqa: F401
+import datasets as hf_datasets
 import numpy as np
 
-# import transformers  # noqa: F401
+from sklearn.model_selection import StratifiedShuffleSplit
 from transformers import AutoTokenizer
 
 from local_models.questions import QUESTIONS
@@ -50,6 +46,7 @@ def setup_logging(output_dir: Path) -> None:
     logger.info("Logging to %s", log_path)
 
 
+# Just using ModernBERT-multilingual but other options are available
 MODELS: dict[str, str] = {
     "ModernBERT-multilingual": "jhu-clsp/mmBERT-base",
     # "mDeBERTa-v3-base": "microsoft/mdeberta-v3-base",
@@ -73,7 +70,7 @@ class QuestionDataset:
 class ModelResult:
     model_name: str
     question: str
-    question_index: int
+    question_label: str
     n_train: int
     n_test: int
     accuracy: float
@@ -95,41 +92,32 @@ def load_labelled_data(input_path: Path) -> list[dict]:
     return records
 
 
-def build_question_datasets(
+def build_question_dataset(
     records: list[dict],
-    questions: list[str],
-) -> list[QuestionDataset]:
-    """
-    For each question, build a QuestionDataset containing all the questions + labels (0/1).
-    Input string = question + " " + sentence_text (tokeniser adds [CLS]/[SEP]).
-    Label = int(answer) for 0.0 or 1.0; records with 0.5 (unsure) are filtered out.
-    """
-    datasets = []
-    for question in questions:
-        inputs, labels = [], []
-        n_filtered = 0
-        for record in records:
-            answers = record.get("question_answers", {})
-            if question not in answers:
-                print(f"No answers for question {question}")
-                continue
-            answer = answers[question]
-            if answer == 0.5:
-                n_filtered += 1
-                continue
-            inputs.append(question + " " + record["sentence_text"])
-            labels.append(int(answer))
-        if n_filtered:
-            logger.info(
-                "Question %r: filtered %d unsure (0.5) records, %d remaining",
-                question[:50],
-                n_filtered,
-                len(inputs),
-            )
-        datasets.append(
-            QuestionDataset(question=question, inputs=inputs, labels=labels)
+    question: str,
+) -> QuestionDataset:
+    """Reformat trainig data into a QuestionDataSet object"""
+    inputs, labels = [], []
+    n_filtered = 0
+    for record in records:
+        answers = record.get("question_answers", {})
+        if question not in answers:
+            print(f"No answers for question {question}")
+            continue
+        answer = answers[question]
+        if answer == 0.5:
+            n_filtered += 1
+            continue
+        inputs.append(question + " " + record["sentence_text"])
+        labels.append(int(answer))
+    if n_filtered:
+        logger.info(
+            "Question %r: filtered %d unsure (0.5) records, %d remaining",
+            question[:50],
+            n_filtered,
+            len(inputs),
         )
-    return datasets
+    return QuestionDataset(question=question, inputs=inputs, labels=labels)
 
 
 def split_dataset(
@@ -138,10 +126,9 @@ def split_dataset(
     random_state: int = RANDOM_SEED,
 ) -> tuple[QuestionDataset, QuestionDataset] | None:
     """
-    Stratified 80/20 train/test split.
+    Stratified train/test split.
     Returns None (and warns) if a class has fewer than 2 examples.
     """
-    from sklearn.model_selection import StratifiedShuffleSplit
 
     labels_arr = np.array(qd.labels)
     unique, counts = np.unique(labels_arr, return_counts=True)
@@ -183,7 +170,6 @@ def split_dataset(
 
 
 def tokenise_dataset(qd: QuestionDataset, tokenizer) -> "datasets.Dataset":
-    import datasets as hf_datasets
 
     tokenised = tokenizer(
         qd.inputs,
@@ -216,7 +202,7 @@ def compute_metrics(eval_pred) -> dict[str, float]:
     }
 
 
-def train_one_model(
+def finetune_one_model(
     model_key: str,
     model_id: str,
     train_ds,
@@ -288,8 +274,32 @@ def auto_detect_device() -> str:
     return "cpu"
 
 
-def train_all_models(
-    question_datasets: list[QuestionDataset],
+def get_question_id(question: str) -> str:
+    map_path = Path("data/local_models/models/ModernBERT-multilingual/model_map.json")
+    question_map: dict[str, str] = (
+        json.loads(map_path.read_text(encoding="utf-8")) if map_path.exists() else {}
+    )
+
+    if question in question_map:
+        return question_map[question]
+
+    existing_ids = [
+        int(v[1:])
+        for v in question_map.values()
+        if v.startswith("q") and v[1:].isdigit()
+    ]
+    next_id = max(existing_ids, default=-1) + 1
+    new_id = f"q{next_id:02d}"
+    question_map[question] = new_id
+    map_path.parent.mkdir(parents=True, exist_ok=True)
+    map_path.write_text(
+        json.dumps(question_map, indent=4, ensure_ascii=False), encoding="utf-8"
+    )
+    return new_id
+
+
+def train_one_model(
+    question_dataset: QuestionDataset,
     output_dir: Path,
     epochs: int,
     batch_size: int,
@@ -297,71 +307,73 @@ def train_all_models(
     save_checkpoints: bool,
     csv_path: Path,
 ) -> list[ModelResult]:
-    """For each question, load the annotated dataset then train a local transformer model"""
+    """For this question, load the annotated dataset then train a local transformer model.
+    Update the file mapping questions to model names."""
 
     results: list[ModelResult] = []
+    question = question_dataset.question
+    question_label = get_question_id(question)
 
-    for q_idx, qd in enumerate(question_datasets):
-        split = split_dataset(qd)
-        if split is None:
+    # for q_idx, qd in enumerate(question_datasets):
+    split = split_dataset(question_dataset)
+    if split is None:
+        return []
+    #     fail # TODO: handle this correctly: raise exception as it's a pretty terminal failing
+    train_qd, test_qd = split
+    # question_label = f"q{q_idx:02d}"
+    logger.info(
+        "Question %s: (train=%d, test=%d)",
+        question[:60],
+        len(train_qd.inputs),
+        len(test_qd.inputs),
+    )
+
+    for model_key, model_id in MODELS.items():
+        logger.info("  Training %s (%s)...", model_key, model_id)
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+        train_ds = tokenise_dataset(train_qd, tokenizer)
+        test_ds = tokenise_dataset(test_qd, tokenizer)
+        print(f"Training '{question[:40]}...' ")
+        try:
+            metrics, elapsed = finetune_one_model(
+                model_key=model_key,
+                model_id=model_id,
+                train_ds=train_ds,
+                test_ds=test_ds,
+                output_dir=output_dir,
+                question_label=question_label,
+                epochs=epochs,
+                batch_size=batch_size,
+                lr=lr,
+                save_checkpoints=save_checkpoints,
+            )
+        except Exception as e:
+            logger.error("  Failed for %s / %s", model_key, e)
             continue
-        train_qd, test_qd = split
-        question_label = f"q{q_idx:02d}"
-        logger.info(
-            "Question %d/%d: %r  (train=%d, test=%d)",
-            q_idx + 1,
-            len(question_datasets),
-            qd.question[:60],
-            len(train_qd.inputs),
-            len(test_qd.inputs),
+
+        result = ModelResult(
+            model_name=model_key,
+            question=question,
+            question_label=question_label,
+            n_train=len(train_qd.inputs),
+            n_test=len(test_qd.inputs),
+            accuracy=metrics.get("accuracy", float("nan")),
+            f1_binary=metrics.get("f1_binary", float("nan")),
+            f1_macro=metrics.get("f1_macro", float("nan")),
+            precision=metrics.get("precision", float("nan")),
+            recall=metrics.get("recall", float("nan")),
+            train_seconds=elapsed,
         )
-
-        for model_key, model_id in MODELS.items():
-            logger.info("  Training %s (%s)...", model_key, model_id)
-            tokenizer = AutoTokenizer.from_pretrained(model_id)
-
-            train_ds = tokenise_dataset(train_qd, tokenizer)
-            test_ds = tokenise_dataset(test_qd, tokenizer)
-            print(f"Training q {q_idx} ")
-            try:
-                metrics, elapsed = train_one_model(
-                    model_key=model_key,
-                    model_id=model_id,
-                    train_ds=train_ds,
-                    test_ds=test_ds,
-                    output_dir=output_dir,
-                    question_label=question_label,
-                    epochs=epochs,
-                    batch_size=batch_size,
-                    lr=lr,
-                    save_checkpoints=save_checkpoints,
-                )
-            except Exception as e:
-                logger.error("  Failed for %s / question %d: %s", model_key, q_idx, e)
-                continue
-
-            result = ModelResult(
-                model_name=model_key,
-                question=qd.question,
-                question_index=q_idx,
-                n_train=len(train_qd.inputs),
-                n_test=len(test_qd.inputs),
-                accuracy=metrics.get("accuracy", float("nan")),
-                f1_binary=metrics.get("f1_binary", float("nan")),
-                f1_macro=metrics.get("f1_macro", float("nan")),
-                precision=metrics.get("precision", float("nan")),
-                recall=metrics.get("recall", float("nan")),
-                train_seconds=elapsed,
-            )
-            results.append(result)
-            append_result_csv(result, csv_path)
-            logger.info(
-                "    accuracy=%.3f  f1_binary=%.3f  f1_macro=%.3f  (%.1fs)",
-                result.accuracy,
-                result.f1_binary,
-                result.f1_macro,
-                elapsed,
-            )
+        results.append(result)
+        append_result_csv(result, csv_path)
+        logger.info(
+            "    accuracy=%.3f  f1_binary=%.3f  f1_macro=%.3f  (%.1fs)",
+            result.accuracy,
+            result.f1_binary,
+            result.f1_macro,
+            elapsed,
+        )
 
     return results
 
@@ -395,7 +407,7 @@ def append_result_csv(result: ModelResult, output_path: Path) -> None:
         writer.writerow(
             {
                 "model_name": result.model_name,
-                "question_index": result.question_index,
+                "question_index": result.question_label,
                 "question_text": result.question,
                 "n_train": result.n_train,
                 "n_test": result.n_test,
@@ -409,33 +421,7 @@ def append_result_csv(result: ModelResult, output_path: Path) -> None:
         )
 
 
-def print_summary_table(results: list[ModelResult]) -> None:
-    if not results:
-        print("No results to summarise.")
-        return
-
-    print("\n" + "=" * 70)
-    print("SUMMARY: Mean ± SD of binary F1 across all questions")
-    print("=" * 70)
-    print(f"{'Model':<30}  {'N questions':>11}  {'Mean F1':>8}  {'SD F1':>7}")
-    print("-" * 70)
-
-    for model_key in MODELS:
-        model_results = [r for r in results if r.model_name == model_key]
-        if not model_results:
-            continue
-        f1_scores = [r.f1_binary for r in model_results if not np.isnan(r.f1_binary)]
-        if not f1_scores:
-            print(f"{model_key:<30}  {'—':>11}  {'—':>8}  {'—':>7}")
-            continue
-        mean_f1 = np.mean(f1_scores)
-        sd_f1 = np.std(f1_scores)
-        print(f"{model_key:<30}  {len(f1_scores):>11}  {mean_f1:>8.3f}  {sd_f1:>7.3f}")
-
-    print("=" * 70 + "\n")
-
-
-def main() -> None:
+def build_one_question_answerer(question: str) -> None:
 
     input_path = Path("data/local_models/labelled_sentences.jsonl")
     output_dir = Path("data/local_models/models")
@@ -454,17 +440,16 @@ def main() -> None:
     device = auto_detect_device()
     logger.info("Using device: %s", device)
     if device != "cpu":
-
         os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
 
     records = load_labelled_data(input_path)
-    question_datasets = build_question_datasets(records, QUESTIONS)
+    question_dataset = build_question_dataset(records, question)
 
     csv_path = output_dir / "results.csv"
     init_results_csv(csv_path)
 
-    results = train_all_models(
-        question_datasets=question_datasets,
+    results = train_one_model(
+        question_dataset=question_dataset,
         output_dir=output_dir,
         epochs=epochs,
         batch_size=batch_size,
@@ -473,8 +458,8 @@ def main() -> None:
         csv_path=csv_path,
     )
 
-    print_summary_table(results)
-
 
 if __name__ == "__main__":
-    main()
+    # main()
+    new_question = "Is this sentence a joke or satirical?"
+    build_one_question_answerer(new_question)

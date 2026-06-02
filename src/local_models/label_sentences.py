@@ -1,5 +1,5 @@
 # Claude-created script
-"""Script 1: Use Gemini (via Pastel) to label sentences with yes/no answers to a fixed question list.
+"""Use Gemini (via Pastel) to label sentences with yes/no answers to a fixed question list.
 
 Output is a JSONL file with one record per sentence, each containing a `question_answers` dict.
 The script is restart-safe: sentences already written to the output file are skipped.
@@ -19,7 +19,6 @@ Usage:
         --batch-size 20
 """
 
-import argparse
 import asyncio
 import json
 import logging
@@ -82,8 +81,8 @@ def build_pastel(questions: list[str]) -> Pastel:
     return Pastel.from_feature_list(questions)
 
 
-def load_already_labelled(output_path: Path) -> set[str]:
-    """Return the set of sentence_text values already present in the output file."""
+def load_already_labelled(output_path: Path, question: str) -> set[str]:
+    """Return sentence_text values that already have an answer for this question."""
     already_done: set[str] = set()
     if not output_path.exists():
         return already_done
@@ -93,7 +92,8 @@ def load_already_labelled(output_path: Path) -> set[str]:
             if line:
                 try:
                     record = json.loads(line)
-                    already_done.add(record["sentence_text"])
+                    if question in record.get("question_answers", {}):
+                        already_done.add(record["sentence_text"])
                 except (json.JSONDecodeError, KeyError):
                     pass
     return already_done
@@ -119,8 +119,9 @@ def format_output_record(
 async def label_batch(
     pastel: Pastel,
     batch_rows: list[dict],
+    questions: list[str],
 ) -> list[dict]:
-    """Call Pastel for a batch of rows, return formatted output records."""
+    """Call Gemini (via Pastel) to label a batch of rows, return formatted output records."""
     sentences = [
         Sentence(
             sentence_text=row["sentence_text"],
@@ -136,42 +137,38 @@ async def label_batch(
         if sentence not in answers_by_sentence:
             logger.warning("No answer returned for: %s", row["sentence_text"][:60])
             continue
-        record = format_output_record(row, answers_by_sentence[sentence], QUESTIONS)
+        record = format_output_record(row, answers_by_sentence[sentence], questions)
         records.append(record)
     return records
 
 
-def append_records(records: list[dict], output_path: Path) -> None:
-    with output_path.open("a", encoding="utf-8") as f:
-        for record in records:
+def update_records(new_records: list[dict], output_path: Path) -> None:
+    existing: dict[str, dict] = {}
+    if output_path.exists():
+        with output_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        record = json.loads(line)
+                        existing[record["sentence_text"]] = record
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+    for record in new_records:
+        text = record["sentence_text"]
+        if text in existing:
+            existing[text]["question_answers"].update(record["question_answers"])
+        else:
+            existing[text] = record
+    with output_path.open("w", encoding="utf-8") as f:
+        for record in existing.values():
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--input",
-        default="scripts/encoder_experiment/fullfact-2026-03-31-claims.jsonl",
-        help="Path to input file (.json FullFact claims export or .jsonl pastel training format)",
-    )
-    parser.add_argument(
-        "--output",
-        default="scripts/encoder_experiment/labelled_sentences.jsonl",
-        help="Path for labelled output JSONL",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=20,
-        help="Number of sentences per Pastel call (default: 20)",
-    )
-    return parser.parse_args()
-
-
-async def main() -> None:
-    args = parse_args()
-    input_path = Path(args.input)
-    output_path = Path(args.output)
+async def main(question: str) -> None:
+    input_path = Path("data/local_models/fullfact-2026-03-31-claims.jsonl")
+    output_path = Path("data/local_models/labelled_sentences.jsonl")
+    batch_size = 20
 
     if not input_path.exists():
         logger.error("Input file not found: %s", input_path)
@@ -180,7 +177,7 @@ async def main() -> None:
     rows = load_input(input_path)
     logger.info("Loaded %d sentences from %s", len(rows), input_path)
 
-    already_done = load_already_labelled(output_path)
+    already_done = load_already_labelled(output_path, question)
     if already_done:
         logger.info("Skipping %d already-labelled sentences", len(already_done))
 
@@ -189,12 +186,9 @@ async def main() -> None:
         logger.info("All sentences already labelled. Nothing to do.")
         return
 
-    logger.info(
-        "%d sentences to label with %d questions each", len(pending), len(QUESTIONS)
-    )
+    logger.info("%d sentences to label", len(pending))
 
-    pastel = build_pastel(QUESTIONS)
-    batch_size = args.batch_size
+    pastel = build_pastel([question])
     total_written = 0
 
     for i in range(0, len(pending), batch_size):
@@ -205,16 +199,16 @@ async def main() -> None:
             (len(pending) + batch_size - 1) // batch_size,
             len(batch),
         )
-        records = await label_batch(pastel, batch)
-        append_records(records, output_path)
+        records = await label_batch(pastel, batch, [question])
+        update_records(records, output_path)
         total_written += len(records)
         logger.info(
             "  Written %d records (total so far: %d)", len(records), total_written
         )
         # not sure if needed; might reduce rate limits/threading errors:
         await asyncio.sleep(1.0)
-        # if i >= 200:
-        #     break
+        if i >= 200:
+            break
 
     logger.info("Done. %d sentences labelled -> %s", total_written, output_path)
     # Allow gRPC background threads (used by the Gemini client) to drain
@@ -223,4 +217,6 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    new_question = "Is this sentence a joke or satirical?"
+
+    asyncio.run(main(new_question))

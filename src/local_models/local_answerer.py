@@ -10,7 +10,7 @@ MODELS: dict[str, str] = {
     "XLM-RoBERTa-base": "FacebookAI/xlm-roberta-base",
 }
 
-MODEL_CATEGORY = "ModernBERT-multilingual"
+MODEL_CATEGORY = "ModernBERT-multilingual"  # only using this one for now
 RESULTS_DIR = Path(__file__).parent / "results"
 MODELS_DIR = Path("data/local_models/models")
 MAX_LENGTH = 128
@@ -49,7 +49,11 @@ def preload_models():
 def answer_question(question: str, sentence: str) -> float:
     import torch
 
-    question_index = QUESTIONS.index(question)
+    try:
+        question_index = QUESTIONS.index(question)
+    except:
+        print("Error: unknown question ", question)
+        return 0.0
 
     if question_index not in _model_cache:
         _model_cache[question_index] = _load_model_for_question(question_index)

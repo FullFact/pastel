@@ -13,6 +13,7 @@ import tenacity
 from genai_utils.gemini import run_prompt_async
 from google.api_core import exceptions as core_exceptions
 
+from local_models.local_answerer import answer_question
 from pastel import pastel_functions
 from pastel.models import FEATURE_TYPE, BiasType, ScoreAndAnswers, Sentence
 
@@ -227,6 +228,17 @@ Here is the sentence: ```[SENT1]```
             )
         return sent_answers
 
+    def get_local_answers_for_single_sentence(
+        self, sentence: Sentence
+    ) -> dict[FEATURE_TYPE, float]:
+        sent_answers: dict[FEATURE_TYPE, float] = {}
+        questions = self.get_questions()
+        for question in questions:
+            response = answer_question(question, sentence.sentence_text)
+            sent_answers[question] = response
+
+        return sent_answers
+
     def _get_function_answers_for_single_sentence(
         self, sentence: Sentence
     ) -> dict[FEATURE_TYPE, float]:
@@ -239,13 +251,18 @@ Here is the sentence: ```[SENT1]```
     async def _get_answers_for_single_sentence(
         self, sentence: Sentence
     ) -> dict[FEATURE_TYPE, float]:
+        # TODO: handle switching between Gemini & local models better - pass through new flag?
         # First, get answers to all the questions from genAI:
         llm_sent_answers = await self._get_llm_answers_for_single_sentence(sentence)
+        # print("_get_answers_for_single_sentence gives ", llm_sent_answers)
+        # llm_sent_answers = dict()
+        # local_sent_answers = self.get_local_answers_for_single_sentence(sentence)
+        local_sent_answers = dict()
 
         # Second, get values from the functions
         function_sent_answers = self._get_function_answers_for_single_sentence(sentence)
 
-        return llm_sent_answers | function_sent_answers
+        return local_sent_answers | llm_sent_answers | function_sent_answers
 
     async def get_answers_to_questions(
         self, sentences: list[Sentence]
