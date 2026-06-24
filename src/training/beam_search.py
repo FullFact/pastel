@@ -24,10 +24,17 @@ SplitData: TypeAlias = tuple[list[EXAMPLES_TYPE], list[EXAMPLES_TYPE]]
 
 
 def load_data(
-    num_splits: int = 1, data_filename: str = "data/example_training_data.jsonl"
+    num_splits: int = 1, data_filename: str = "data/ff_merged_ct_less_health.jsonl"
 ) -> list[SplitData]:
     """Load labelled data set & split into train and test sets"""
     all_examples = load_examples(data_filename)
+    score_counts: dict[int, int] = {}
+    for _, score in all_examples:
+        rounded = int(round(score))
+        score_counts[rounded] = score_counts.get(rounded, 0) + 1
+    print(f"Loaded {len(all_examples)} examples. Score distribution:")
+    for val in sorted(score_counts):
+        print(f"  {val}: {score_counts[val]}")
     all_splits = []
     for _ in range(num_splits):
         train_examples, test_examples = train_test_split(all_examples, test_size=0.5)
@@ -69,6 +76,8 @@ def run_beam_search(
     """Main feature selection algorithm. Systematically add more and
     more features, but only keep the best 'beta' models at each iteration.
     See https://en.wikipedia.org/wiki/Beam_search for background.
+    beta is the "beam width", i.e. the number of solutions carried forward from
+    each iteration to the next.
     Each iteration adds one new feature, so max_iter is also the maximum number
     of features to be considered. If set to None, defaults to 'try all features'."""
 
@@ -183,12 +192,69 @@ def evaluate_pastel_set(
     for key in all_metrics[0].keys():
         mean_metrics[key] = sum(d[key] for d in all_metrics) / len(all_metrics)
 
-    print("\nF1 scores:")
-    _ = [print(m["f1"], end="\t") for m in all_metrics]
-    print(mean_metrics["f1"])
+    print(f"F1 scores ({len(all_splits)} splits):\t", end="")
+    _ = [print(f'{m["f1"]:4.3f}', end="\t") for m in all_metrics]
+    print(f"Mean: {mean_metrics["f1"]:4.3f}")
 
     # combine train & test data to optimise best model with this feature set
     all_examples = all_splits[0][0] + all_splits[0][1]
     final_trained_model = train_model_from_examples(cached_train_model, all_examples)
 
     return mean_metrics, final_trained_model
+
+
+if __name__ == "__main__":
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    all_features = [
+        "Could believing this claim harm someone's health?",
+        "Does this sentence relate to many people?",
+        "Is this sentence likely to be believed by many people?",
+        "is_claim_type_quantity",
+        "Could believing this claim lead to violence?",
+        "Does the sentence contain compare quantities, such as 'more' or 'less'?",
+        "Answer 'yes' if this is a general or universal claim or answer 'no' if it is about a single event or individual",
+        "Does the sentence discuss superlatives, such as 'biggest ever' or  'fastest growth'?",
+        "is_claim_type_rules",
+        "Is this sentence interesting to the average reader?",
+        "Does the sentence suggest a course of action?",
+        "is_claim_type_support",
+        "is_claim_type_other",
+        "is_claim_type_not_claim",
+        "is_claim_type_personal",
+        "is_claim_type_predictions",
+    ]
+    import json
+
+    results = {}
+    for max_iter in range(3, 11):
+        finished = False
+        loop = 0
+        while not finished:
+            try:
+                _best_features, _best_f1 = run_beam_search(
+                    all_features, beta=5, max_iter=max_iter
+                )
+                print(f"\n\nBest model at end of max_iter={max_iter}:")
+                if _best_features:
+                    print(_best_f1)
+                    _best_features.display_model()
+                    model_dict = {
+                        (
+                            "BIAS"
+                            if isinstance(k, BiasType)
+                            else (k.__name__ if callable(k) else k)
+                        ): v
+                        for k, v in _best_features.model.items()
+                    }
+                else:
+                    model_dict = None
+                results[max_iter] = {"best_f1": _best_f1, "best_features": model_dict}
+                with open("results.json", "w") as f:
+                    json.dump(results, f, indent=2)
+                finished = True
+
+            except Exception as e:
+                print(loop, e)
+                loop += 1
