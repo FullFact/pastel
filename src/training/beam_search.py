@@ -151,7 +151,7 @@ def train_model_from_examples(
         feat: float(weight)
         for feat, weight in zip(train_model.model.keys(), new_weights)
     }
-    new_pastel = Pastel(new_model)
+    new_pastel = Pastel(new_model, train_model.labels)
     return new_pastel
 
 

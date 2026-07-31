@@ -44,6 +44,54 @@ def test_model_from_dict():
     assert len(model.get_questions()) == 1
 
 
+def test_labels_default_to_empty(pastel_instance: Pastel) -> None:
+    assert pastel_instance.labels == {}
+
+
+@mark.parametrize(
+    "make_model",
+    [
+        param(
+            lambda labels: Pastel({BiasType.BIAS: 1.0, Q1: -3.0}, labels),
+            id="constructor",
+        ),
+        param(
+            lambda labels: Pastel.from_dict({"bias": 1.0, Q1: -3.0}, labels),
+            id="from_dict",
+        ),
+        param(
+            lambda labels: Pastel.from_feature_list([Q1], labels),
+            id="from_feature_list",
+        ),
+    ],
+)
+def test_labels_are_stored(make_model) -> None:
+    labels = {"task": "checkworthy_pastel"}
+    assert make_model(labels).labels == labels
+
+
+def test_labels_from_load_model() -> None:
+    labels = {"task": "checkworthy_pastel"}
+    with tempfile.NamedTemporaryFile(
+        mode="w", delete=False, suffix=".json"
+    ) as temp_file:
+        json.dump({"bias": 1.0, Q1: -3.0}, temp_file)
+    assert Pastel.load_model(temp_file.name, labels).labels == labels
+
+
+@patch("pastel.pastel.run_prompt_async", new_callable=AsyncMock)
+async def test_labels_passed_to_gemini(mock_run_prompt: AsyncMock) -> None:
+    mock_run_prompt.return_value = "0. yes\n1. no"
+    labels = {"task": "checkworthy_pastel"}
+    pasteliser = Pastel({BiasType.BIAS: 1.0, Q1: -3.0, Q2: 2.0}, labels)
+
+    await pasteliser._get_llm_answers_for_single_sentence(
+        Sentence("This is a claim.", tuple("quantity"))
+    )
+
+    assert mock_run_prompt.call_args.kwargs["labels"] == labels
+
+
 def test_make_prompt(pastel_instance: Pastel) -> None:
     sentence = Sentence("The sky is blue.", tuple("quantity"))
     prompt = pastel_instance.make_prompt(sentence)

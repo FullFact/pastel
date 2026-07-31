@@ -18,15 +18,19 @@ class CachedPastel(Pastel):
     Inherits from Pastel and overrides get_answers_to_questions to use caching.
     """
 
-    def __init__(self, model: dict[FEATURE_TYPE, float]) -> None:
+    def __init__(
+        self,
+        model: dict[FEATURE_TYPE, float],
+        labels: dict[str, str] | None = None,
+    ) -> None:
         """Initialize with questions and database connection."""
-        super().__init__(model)
+        super().__init__(model, labels)
         self.db = DatabaseManager()
 
     @classmethod
     def from_pastel(cls, pastel: Pastel) -> "CachedPastel":
         """Create a CachedPastel instance from an existing Pastel object."""
-        cached_pastel = cls(pastel.model)
+        cached_pastel = cls(pastel.model, pastel.labels)
         return cached_pastel
 
     def get_cached_questions(self) -> List[str]:
@@ -123,7 +127,7 @@ class CachedPastel(Pastel):
             sub_model: dict[FEATURE_TYPE, float] = {BiasType.BIAS: self.get_bias()}
             for q in missing_questions:
                 sub_model[q] = self.model[q]
-            sub_pastel = Pastel(sub_model)
+            sub_pastel = Pastel(sub_model, self.labels)
             new_answers: dict[Sentence, dict[FEATURE_TYPE, float]] = (
                 await sub_pastel.get_answers_to_questions(list(missing_sentences))
             )

@@ -55,15 +55,24 @@ class Pastel:
     The main model is a dict mapping features to weights.
     """
 
-    def __init__(self, model: dict[FEATURE_TYPE, float]) -> None:
+    def __init__(
+        self,
+        model: dict[FEATURE_TYPE, float],
+        labels: dict[str, str] | None = None,
+    ) -> None:
         """
         Create a new Pastel object from a list of questions and functions.
         A Pastel model is dict of features to weights. Exactly one
         entry should be BiasType.BIAS; zero or more may be features
         that are questions (ie strings) and zero or more may be
         are callable functions defined in the pastel_functions module.
+        The optional labels are attached to every Gemini call this model makes,
+        so its spend can be separated out in Google Cloud billing. They are
+        merged with (and take precedence over) any GENAI_LABEL_* environment
+        variables picked up by genai_utils.
         """
         self.model = model
+        self.labels = labels or {}
 
         # assert bias term exists
         assert isinstance(self.get_bias(), float)
@@ -81,7 +90,10 @@ class Pastel:
             print(f"  {name:20}: {weight:.4f}")
 
     @staticmethod
-    def from_feature_list(feature_names: Sequence[FEATURE_TYPE]) -> "Pastel":
+    def from_feature_list(
+        feature_names: Sequence[FEATURE_TYPE],
+        labels: dict[str, str] | None = None,
+    ) -> "Pastel":
         """Take a list of features without weights. Initialise new
         model with all weights set to zero, ready for training"""
         new_model = dict()
@@ -92,10 +104,13 @@ class Pastel:
             else:
                 new_model[feature] = 0.0
         new_model[BiasType.BIAS] = 0.0
-        return Pastel(new_model)
+        return Pastel(new_model, labels)
 
     @staticmethod
-    def from_dict(model_dict: dict[str, float]) -> "Pastel":
+    def from_dict(
+        model_dict: dict[str, float],
+        labels: dict[str, str] | None = None,
+    ) -> "Pastel":
         "Create model from a map of features to weights"
         # replace function names with function objects found in pastel_functions module
         new_model = {}
@@ -107,16 +122,19 @@ class Pastel:
             else:
                 new_model[feature] = weight
 
-        return Pastel(new_model)
+        return Pastel(new_model, labels)
 
     @staticmethod
-    def load_model(model_file: str) -> "Pastel":
+    def load_model(
+        model_file: str,
+        labels: dict[str, str] | None = None,
+    ) -> "Pastel":
         """Load model from JSON file. Convert any functions in the model
         from their names to Callable functions."""
 
         with open(model_file, "rt", encoding="utf-8") as json_in:
             model_json = json.load(json_in)
-        return Pastel.from_dict(model_json)
+        return Pastel.from_dict(model_json, labels)
 
     def save_model(self, model_path: str) -> None:
         """
@@ -212,7 +230,7 @@ Here is the sentence: ```[SENT1]```
         """Runs all genAI questions on the given sentence."""
         sent_answers: dict[FEATURE_TYPE, float] = {}
         prompt = self.make_prompt(sentence)
-        raw_output = await run_prompt_async(prompt)
+        raw_output = await run_prompt_async(prompt, labels=self.labels)
         raw_output = raw_output.strip().lower()
         if "question" in raw_output:
             output = raw_output[raw_output.index("0") :]
