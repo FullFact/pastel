@@ -9,14 +9,14 @@ Q2 = "Does the statement contain bias?"
 
 
 class DummyPastel(Pastel):
-    def __init__(self, questions=None):
+    def __init__(self, questions=None, labels=None):
         if questions is None:
             questions = {
                 BiasType.BIAS: 1.0,
                 Q1: -3.0,
                 Q2: 2.0,
             }
-        super().__init__(questions)
+        super().__init__(questions, labels)
 
     async def get_answers_to_questions(
         self, sentences: list[Sentence]
@@ -54,6 +54,12 @@ def test_from_pastel_copies_model():
         np.array(list(dummy.model.values())),
     )
     assert list(cached.model.keys()) == list(dummy.model.keys())
+
+
+def test_from_pastel_copies_labels():
+    labels = {"task": "checkworthy_pastel"}
+    dummy = DummyPastel(labels=labels)
+    assert CachedPastel.from_pastel(dummy).labels == labels
 
 
 async def test_make_predictions_caching(monkeypatch):

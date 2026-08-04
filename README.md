@@ -25,6 +25,18 @@ If you don't want to manually specify the config of Gemini, you should set the f
 * `GEMINI_LOCATION`: the GCP location you want to run Gemini on, e.g. "global"
 * `GEMINI_MODEL`: the Gemini model you wish to use, e.g. "gemini-2.5-flash-lite"
 
+### Billing labels
+
+Every Pastel constructor takes an optional `labels` dict, which is attached to each Gemini call the model makes so its spend can be separated out in Google Cloud billing:
+
+```python
+pastel = Pastel.from_dict(weights, labels={"task": "checkworthy_pastel"})
+```
+
+These are merged with any `GENAI_LABEL_*` environment variables that `genai_utils` picks up at import time (e.g. `GENAI_LABEL_SERVICE=claims-analysis-api` gives every call a `service` label), so a per-task label here composes with the service-level one rather than replacing it.
+
+Keys must start with a lowercase letter; keys and values can only contain lowercase letters, numbers, `-` and `_`, and must be at most 63 characters. `genai_utils` drops any label that doesn't meet those rules (with a warning) rather than failing the call, so a typo means untagged spend rather than an error.
+
 ### A note on data
 
 An example data file, `data/example_training_data.jsonl` is provided so tests and demos can run.

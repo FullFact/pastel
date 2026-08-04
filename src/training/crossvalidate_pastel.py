@@ -173,7 +173,7 @@ def run_crossvalidation(
         train_sentences = [ex[0] for ex in train_examples]
 
         # Create a new model for training to avoid modifying the input model
-        train_model = Pastel(pastel.model)
+        train_model = Pastel(pastel.model, pastel.labels)
         cached_train_model = CachedPastel.from_pastel(train_model)
 
         # Get cached responses and learn weights
