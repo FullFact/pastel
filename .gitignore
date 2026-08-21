@@ -165,5 +165,5 @@ cython_debug/
 .vscode/
 responses.db
 
-# Encoder experiment outputs
-scripts/encoder_experiment/results/
+# Local model outputs: labelled training data and fine-tuned checkpoints
+data/local_models/

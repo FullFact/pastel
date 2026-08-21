@@ -1,6 +1,19 @@
+"""Exhaustive question-set search by cross-validation.
+
+The backend that answers the questions is chosen at runtime:
+
+    python scripts/demo_crossval.py                  # Gemini (the default)
+    python scripts/demo_crossval.py --backend local  # fine-tuned models
+"""
+
+import argparse
+from typing import Type
+
 import numpy as np
 
 import training.crossvalidate_pastel as cvp
+from local_models.questions import QUESTIONS
+from pastel import BACKENDS, DEFAULT_BACKEND, PastelLocal, PastelModel, get_backend
 from training.db_manager import DatabaseManager
 
 TRAINING_DATA_PATH = "data/example_training_data.jsonl"
@@ -19,18 +32,28 @@ def report_score_ranges(data_filename: str) -> None:
     print(f"Mean: {np.mean(true_scores):.3f} (sd. {np.std(true_scores):.2f})")
 
 
-def demo() -> None:
-    """Take all the questions that exist in the cache database.
-    (This is all questions that have been tried out and not deleted.)
-    Then try every combination (or at least many combinations) of questions,
-    build the corresponding regression model and calculate its f1 score.
-    After the first few iterations, all the Gemini responses should be in the
-    cache, so it's just building/evaluating linear regression models which is
-    quite fast. (Though millions of combinations will still take hours!)
+def get_questions(backend: Type[PastelModel]) -> list[str]:
+    """The pool of questions to search over.
+
+    The local backend is limited to the questions it has fine-tuned models for.
+    Otherwise take every question in the cache database, i.e. every question
+    that has been tried out and not deleted.
     """
-    # Load questions from database
+    if issubclass(backend, PastelLocal):
+        return list(QUESTIONS)
     db = DatabaseManager()
-    all_questions = db.get_unique_questions()
+    return db.get_unique_questions()
+
+
+def demo(backend: Type[PastelModel]) -> None:
+    """Take a pool of questions, then try every combination (or at least many
+    combinations) of them, build the corresponding regression model and
+    calculate its f1 score.
+    After the first few iterations, all the backend's responses should be in
+    the cache, so it's just building/evaluating linear regression models which
+    is quite fast. (Though millions of combinations will still take hours!)
+    """
+    all_questions = get_questions(backend)
 
     report_score_ranges(TRAINING_DATA_PATH)
 
@@ -40,6 +63,7 @@ def demo() -> None:
         min_questions=8,
         max_questions=10,
         n_trials=2,
+        backend=backend,
     )
 
     # Find the best performing combination
@@ -63,5 +87,20 @@ def demo() -> None:
         )
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--backend",
+        choices=sorted(BACKENDS),
+        default=None,
+        help="Which backend answers the questions. Defaults to the "
+        f"PASTEL_BACKEND environment variable, or {DEFAULT_BACKEND}.",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    demo()
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    demo(get_backend(parse_args().backend))

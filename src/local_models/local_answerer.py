@@ -1,29 +1,31 @@
 # Uses local, pre-trained encoder models to answer questions about sentences.
 
-from pathlib import Path
+import logging
+from typing import Any
 
+from local_models.model_registry import (
+    MODEL_CATEGORY,
+    MODELS,
+    MODELS_DIR,
+    model_id_for_question,
+)
 from local_models.questions import QUESTIONS
 
-MODELS: dict[str, str] = {
-    "ModernBERT-multilingual": "jhu-clsp/mmBERT-base",
-    "mDeBERTa-v3-base": "microsoft/mdeberta-v3-base",
-    "XLM-RoBERTa-base": "FacebookAI/xlm-roberta-base",
-}
-
-MODEL_CATEGORY = "ModernBERT-multilingual"  # only using this one for now
-RESULTS_DIR = Path(__file__).parent / "results"
-MODELS_DIR = Path("data/local_models/models")
 MAX_LENGTH = 128
 BATCH_SIZE = 32
 
-_model_cache: dict[int, tuple] = {}
+_logger = logging.getLogger(__name__)
+
+# One (model, tokenizer) pair per model id, e.g. "q03". Loading a model takes
+# seconds, so they are kept for the process lifetime once loaded.
+_model_cache: dict[str, tuple[Any, Any]] = {}
 
 
-def _load_model_for_question(question_index: int) -> tuple:
+def _load_model(model_id: str) -> tuple[Any, Any]:
+    """Load the latest checkpoint of the fine-tuned model called `model_id`."""
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-    question_label = f"q{question_index:02d}"
-    checkpoint_dir = MODELS_DIR / MODEL_CATEGORY / question_label
+    checkpoint_dir = MODELS_DIR / MODEL_CATEGORY / model_id
 
     checkpoints = sorted(
         checkpoint_dir.glob("checkpoint-*"),
@@ -32,19 +34,28 @@ def _load_model_for_question(question_index: int) -> tuple:
     if not checkpoints:
         raise FileNotFoundError(f"No checkpoints found in {checkpoint_dir}")
     latest = checkpoints[-1]
-    print(f"Loading model from {latest}")
+    _logger.info("Loading model from %s", latest)
 
-    model_id = MODELS[MODEL_CATEGORY]
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    base_model_id = MODELS[MODEL_CATEGORY]
+    tokenizer = AutoTokenizer.from_pretrained(base_model_id)
     model = AutoModelForSequenceClassification.from_pretrained(str(latest))
     model.eval()
     return model, tokenizer
 
 
-def preload_models():
-    """Load all models into cache to save time later"""
-    for question_index in range(0, len(QUESTIONS)):
-        _model_cache[question_index] = _load_model_for_question(question_index)
+def _cached_model(question: str) -> tuple[Any, Any]:
+    """The (model, tokenizer) pair that answers `question`, loading it once."""
+    model_id = model_id_for_question(question)
+    if model_id not in _model_cache:
+        _model_cache[model_id] = _load_model(model_id)
+    return _model_cache[model_id]
+
+
+def preload_models(questions: list[str] | None = None) -> None:
+    """Load models into the cache up front, so the first call to
+    answer_question() doesn't pay for it. Defaults to every question."""
+    for question in QUESTIONS if questions is None else questions:
+        _cached_model(question)
 
 
 def answer_question(question: str, sentences: list[str]) -> list[float]:
@@ -54,16 +65,7 @@ def answer_question(question: str, sentences: list[str]) -> list[float]:
     """
     import torch
 
-    try:
-        question_index = QUESTIONS.index(question)
-    except ValueError:
-        print("Error: unknown question ", question)
-        return [0.0] * len(sentences)
-
-    if question_index not in _model_cache:
-        _model_cache[question_index] = _load_model_for_question(question_index)
-
-    model, tokenizer = _model_cache[question_index]
+    model, tokenizer = _cached_model(question)
 
     input_text = [question + " " + sentence for sentence in sentences]
 
@@ -87,6 +89,7 @@ def answer_question(question: str, sentences: list[str]) -> list[float]:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
     preload_models()
     sentences = [

@@ -1,6 +1,6 @@
 import json
 import tempfile
-from unittest.mock import AsyncMock, call, patch
+from unittest.mock import call, patch
 
 import numpy as np
 import pytest
@@ -16,9 +16,19 @@ Q1: FEATURE_TYPE = "Is the statement factual?"
 Q2: FEATURE_TYPE = "Does the statement contain bias?"
 
 
+class DummyPastel(PastelModel):
+    """PastelModel is abstract, so the shared behaviour is tested through a
+    backend that answers nothing. Tests that need answers patch them in."""
+
+    async def get_answers_to_questions(
+        self, sentences: list[Sentence]
+    ) -> dict[Sentence, dict[FEATURE_TYPE, float]]:
+        return {}
+
+
 @pytest.fixture
 def pastel_instance() -> PastelModel:
-    pasteliser = PastelModel({BiasType.BIAS: 1.0, Q1: -3.0, Q2: 2.0})
+    pasteliser = DummyPastel({BiasType.BIAS: 1.0, Q1: -3.0, Q2: 2.0})
     return pasteliser
 
 
@@ -32,19 +42,37 @@ def test_load_file(pastel_instance: PastelModel) -> None:
             Q2: 2.0,
         }
         json.dump(model, temp_file)
-    loaded: PastelModel = PastelModel.load_model(temp_file.name)
+    loaded: PastelModel = DummyPastel.load_model(temp_file.name)
     assert loaded.model == pastel_instance.model
 
 
-def test_make_prompt(pastel_instance: PastelModel) -> None:
-    sentence = Sentence("The sky is blue.", tuple("quantity"))
-    prompt = pastel_instance.make_prompt(sentence)
-    assert "[QUESTIONS]" not in prompt
-    assert "[SENT1]" not in prompt
-    assert "The sky is blue." in prompt
-    assert "Is the statement factual?" in prompt
-    assert "Does the statement contain bias?" in prompt
-    assert "Is this a load of old nonsense" not in prompt
+def test_save_load_round_trip_with_functions() -> None:
+    """Functions and the bias term are saved by name and come back as the same
+    features, so a saved model is the model that was trained."""
+    model = DummyPastel.from_feature_list([Q1, "is_claim_type_quantity"])
+    model.model = {feature: 1.5 for feature in model.model}
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", delete=False, suffix=".json"
+    ) as temp_file:
+        path = temp_file.name
+    model.save_model(path)
+
+    with open(path, "rt", encoding="utf-8") as json_in:
+        assert set(json.load(json_in)) == {Q1, "is_claim_type_quantity", "bias"}
+
+    assert DummyPastel.load_model(path).model == model.model
+
+
+def test_with_model(pastel_instance: PastelModel) -> None:
+    """A new model of the same kind, with different features and weights."""
+    updated = pastel_instance.create_copy_with_different_model(
+        {BiasType.BIAS: 0.5, Q1: 1.0}
+    )
+    assert isinstance(updated, DummyPastel)
+    assert updated.model == {BiasType.BIAS: 0.5, Q1: 1.0}
+    # the original is untouched
+    assert pastel_instance.get_questions() == [Q1, Q2]
 
 
 def test_get_scores_from_answers(pastel_instance: PastelModel) -> None:
@@ -75,62 +103,6 @@ def test_quantify_answers(pastel_instance: PastelModel) -> None:
     assert all(x == 1 for x in numeric_answers[:, 0])
     # Given no sentences, return no answers
     assert pastel_instance.quantify_answers([]).shape[0] == 0
-
-
-@patch(
-    "pastel.pastel.run_prompt_async",
-    side_effect=ValueError("Gemini failed"),
-)
-async def test_retries(
-    mock_run_prompt: AsyncMock, pastel_instance: PastelModel
-) -> None:
-    sentence = Sentence("This is a claim.", tuple("quantity"))
-    try:
-        await pastel_instance._get_answers_for_single_sentence(sentence)
-        assert False
-    except Exception:
-        assert True
-
-    assert mock_run_prompt.call_count == 3
-
-
-@mark.parametrize(
-    "sentences,return_values,expected",
-    [
-        param(
-            [Sentence("s1", tuple("quantity")), Sentence("s2", tuple("quantity"))],
-            [{Q1: 1.0, Q2: 1.0}, {Q1: 1.0, Q2: 0.0}],
-            {
-                Sentence("s1", tuple("quantity")): {Q1: 1.0, Q2: 1.0},
-                Sentence("s2", tuple("quantity")): {Q1: 1.0, Q2: 0.0},
-            },
-            id="Normal case",
-        ),
-        param(
-            [Sentence("s1", tuple("quantity")), Sentence("s2", tuple("quantity"))],
-            [{Q1: 1.0, Q2: 1.0}, ValueError()],
-            {Sentence("s1", tuple("quantity")): {Q1: 1.0, Q2: 1.0}},
-            id="One sentence fails",
-        ),
-        param(
-            [Sentence("s1", tuple("quantity")), Sentence("s2", tuple("quantity"))],
-            [ValueError(), ValueError()],
-            {},
-            id="All sentences fail",
-        ),
-    ],
-)
-async def test_get_answers_to_questions(
-    sentences: list[Sentence],
-    return_values: list[dict[str, float] | BaseException],
-    expected: dict[Sentence, dict[str, float]],
-    pastel_instance: PastelModel,
-):
-    with patch.object(
-        pastel_instance, "_get_answers_for_single_sentence", side_effect=return_values
-    ):
-        answers = await pastel_instance.get_answers_to_questions(sentences)
-        assert answers == expected
 
 
 @mark.parametrize(

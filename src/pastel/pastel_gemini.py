@@ -6,8 +6,8 @@ import tenacity
 from genai_utils.gemini import run_prompt_async
 from google.api_core import exceptions as core_exceptions
 
-from pastel.models import Sentence
-from pastel.pastel import FEATURE_TYPE, PastelModel
+from pastel.models import FEATURE_TYPE, Sentence
+from pastel.pastel import PastelModel
 
 _logger = logging.getLogger(__name__)
 
@@ -55,8 +55,7 @@ class PastelGemini(PastelModel):
 
         questions = self.get_questions()
 
-        prompt = dedent(
-            """
+        prompt = dedent("""
             Your task is to answer a series of questions about a sentence. Ensure your answers are truthful and reliable.
             You are expected to answer with ‘Yes’ or ‘No’ but you are also allowed to answer with ‘Unsure’ if you do not
             have enough information or context to provide a reliable answer.
@@ -65,13 +64,12 @@ class PastelGemini(PastelModel):
             0. Yes
             1. Yes
             2. No
-            
+
             Here are the questions:
             [QUESTIONS]
-            
+
             Here is the sentence: ```[SENT1]```
-            """
-        )
+            """)
         # extract the PastelFeatures whose type is string
         prompt = prompt.replace(
             "[QUESTIONS]",
@@ -121,27 +119,12 @@ class PastelGemini(PastelModel):
             )
         return sent_answers
 
-    def _get_function_answers_for_single_sentence(
-        self, sentence: Sentence
-    ) -> dict[FEATURE_TYPE, float]:
-        """Runs all the functions in the model on the given sentence."""
-        sent_answers: dict[FEATURE_TYPE, float] = {}
-        for f in self.get_functions():
-            sent_answers[f] = f(sentence)
-        return sent_answers
-
     async def _get_answers_for_single_sentence(
         self, sentence: Sentence
     ) -> dict[FEATURE_TYPE, float]:
-        # TODO: handle switching between Gemini & local models better - pass through new flag?
-        # First, get answers to all the questions from genAI:
+        """Answer every feature in the model for one sentence: the questions go
+        to Gemini, the functions are computed locally."""
         llm_sent_answers = await self._get_llm_answers_for_single_sentence(sentence)
-        # print("_get_answers_for_single_sentence gives ", llm_sent_answers)
-        # llm_sent_answers = dict()
-        # local_sent_answers = self.get_local_answers_for_single_sentence(sentence)
-        local_sent_answers = dict()
-
-        # Second, get values from the functions
         function_sent_answers = self._get_function_answers_for_single_sentence(sentence)
 
-        return local_sent_answers | llm_sent_answers | function_sent_answers
+        return llm_sent_answers | function_sent_answers

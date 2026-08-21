@@ -1,16 +1,14 @@
 # First attempt at asking a series of yes/no questions for checkworthiness etc., inspired by Sheffield's PASTEL model
 # See paper: https://arxiv.org/abs/2309.07601v3 "Weakly Supervised Veracity Classification with LLM-Predicted Credibility Signals"
 
-import asyncio
 import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import Sequence, Tuple, TypeAlias
+from typing import Self, Sequence, Tuple, TypeAlias
 
 import numpy as np
 import numpy.typing as npt
-import tenacity
 
 from pastel import pastel_functions
 from pastel.models import FEATURE_TYPE, BiasType, ScoreAndAnswers, Sentence
@@ -20,29 +18,24 @@ _logger = logging.getLogger(__name__)
 EXAMPLES_TYPE = Tuple[Sentence, float]
 ARRAY_TYPE: TypeAlias = npt.NDArray[np.float64]
 
-RETRYABLE_EXCEPTIONS: tuple[type[Exception]] = (ValueError,)
+# The key the bias term is stored under in a saved model file.
+BIAS_KEY = "bias"
 
 
 def feature_as_string(feature: FEATURE_TYPE) -> str:
+    """The name a feature is saved and displayed under: the bias term is
+    "bias", a function is its own name and a question is itself.
+    load_model() reverses this."""
+    if isinstance(feature, BiasType):
+        return BIAS_KEY
     if callable(feature):
         return feature.__name__
     return str(feature)
 
 
-def log_retry_attempt(retry_state: tenacity.RetryCallState) -> None:
-    """Log the retry attempt number and the exception that occurred."""
-    if (not retry_state.outcome) or (not retry_state.next_action):
-        return
-
-    _logger.info(
-        f"Retrying request due to {retry_state.outcome.exception()}..."
-        f"Attempt #{retry_state.attempt_number}, "
-        f"waiting {retry_state.next_action.sleep:.2f} seconds."
-    )
-
-
 class PastelModel(ABC):
-    """Uses list of yes/no questions and functions to analyse a piece of text.
+    """
+    Uses list of yes/no questions and functions to analyse a piece of text.
     Each of these features has an associated weight which is used to generate
     the final score for the text.
     The main model is a dict mapping features to weights.
@@ -66,18 +59,12 @@ class PastelModel(ABC):
 
     def display_model(self) -> None:
         """Print the model's features and weights in a readable format."""
-        print("Pastel Model:")
+        print(f"{type(self).__name__} model:")
         for feature, weight in self.model.items():
-            if isinstance(feature, BiasType):
-                name = "Bias"
-            elif callable(feature):
-                name = feature.__name__
-            else:
-                name = str(feature)
-            print(f"  {name:20}: {weight:.4f}")
+            print(f"  {feature_as_string(feature):20}: {weight:.4f}")
 
-    @staticmethod
-    def from_feature_list(feature_names: Sequence[FEATURE_TYPE]) -> "PastelModel":
+    @classmethod
+    def from_feature_list(cls, feature_names: Sequence[FEATURE_TYPE]) -> Self:
         """Take a list of features without weights. Initialise new
         model with all weights set to zero, ready for training"""
         new_model = dict()
@@ -88,10 +75,10 @@ class PastelModel(ABC):
             else:
                 new_model[feature] = 0.0
         new_model[BiasType.BIAS] = 0.0
-        return PastelModel(new_model)
+        return cls(new_model)
 
-    @staticmethod
-    def load_model(model_file: str) -> "PastelModel":
+    @classmethod
+    def load_model(cls, model_file: str) -> Self:
         """Load model from JSON file. Convert any functions in the model
         from their names to Callable functions."""
 
@@ -102,12 +89,12 @@ class PastelModel(ABC):
         for feature, weight in model_json.items():
             if feature in pastel_functions.__all__:
                 new_model[getattr(pastel_functions, feature)] = weight
-            elif feature == "bias":
+            elif feature == BIAS_KEY:
                 new_model[BiasType.BIAS] = weight
             else:
                 new_model[feature] = weight
 
-        return PastelModel(new_model)
+        return cls(new_model)
 
     def save_model(self, model_path: str) -> None:
         """
@@ -117,16 +104,19 @@ class PastelModel(ABC):
 
         # Store the name of each function; all functions are in pastel_functions
         # so we know where to find them after re-loading a model.
-        model_json = dict()
-        for feature, weight in self.model.items():
-            if isinstance(feature, BiasType):
-                model_json["bias"] = float(weight)
-            if isinstance(feature, str):
-                model_json[feature] = float(weight)
-            if callable(feature):
-                model_json[feature.__name__] = float(weight)
+        model_json = {
+            feature_as_string(feature): float(weight)
+            for feature, weight in self.model.items()
+        }
         with open(model_path, "wt", encoding="utf-8") as json_out:
             json.dump(model_json, json_out, indent=2)
+
+    def create_copy_with_different_model(
+        self, model: dict[FEATURE_TYPE, float]
+    ) -> "PastelModel":
+        """Return a new model of the same kind - same backend, same caching -
+        but with a different set of features and weights."""
+        return type(self)(model)
 
     def get_bias(self) -> float:
         """Return just the bias weight"""
@@ -160,8 +150,19 @@ class PastelModel(ABC):
         """
         Get answers for a given list of sentences.
         For each sentence, this Returns a dictionary mapping features to scores.
+
+        Implementations may return fewer entries than they were given: a sentence
+        the backend could not answer for should be omitted rather than given
+        made-up answers. make_predictions() scores any omitted sentence as 0.0.
         """
         raise NotImplementedError
+
+    def _get_function_answers_for_single_sentence(
+        self, sentence: Sentence
+    ) -> dict[FEATURE_TYPE, float]:
+        """Runs all the functions in the model on the given sentence.
+        These are computed locally, so this is shared by every backend."""
+        return {f: f(sentence) for f in self.get_functions()}
 
     def quantify_answers(
         self, answers: Sequence[dict[FEATURE_TYPE, float]]

@@ -5,14 +5,15 @@
 # otherwise the problem space grows exponentially.
 
 import asyncio
-from typing import TypeAlias, cast
+from typing import Callable, Sequence, TypeAlias
 
 import numpy as np
 from sklearn.model_selection import train_test_split  # type: ignore
 
 from pastel.models import FEATURE_TYPE, BiasType
 from pastel.optimise_weights import lin_reg
-from pastel.pastel import EXAMPLES_TYPE, PastelModel
+from pastel.pastel import EXAMPLES_TYPE, PastelModel, feature_as_string
+from pastel.pastel_gemini import PastelGemini
 from training.cached_pastel import CachedPastel
 from training.crossvalidate_pastel import (
     evaluate_model,
@@ -21,6 +22,8 @@ from training.crossvalidate_pastel import (
 
 # One split of training data & test data
 SplitData: TypeAlias = tuple[list[EXAMPLES_TYPE], list[EXAMPLES_TYPE]]
+# Anything that turns a model dict into a Pastel model, i.e. a PastelModel subclass
+BackendType: TypeAlias = Callable[[dict[FEATURE_TYPE, float]], PastelModel]
 
 
 def load_data(
@@ -43,13 +46,13 @@ def load_data(
 
 
 def add_one(
-    current_features: frozenset[str], all_features: list[str]
-) -> list[frozenset[str]]:
+    current_features: frozenset[FEATURE_TYPE], all_features: Sequence[FEATURE_TYPE]
+) -> list[frozenset[FEATURE_TYPE]]:
     """Take the current set and create a list of new sets, identical
     except each has one new, different feature added."""
     new_candidates = []
     for f in all_features:
-        S = set(current_features)
+        S: set[FEATURE_TYPE] = set(current_features)
         if f not in S:
             S.add(f)
             new_candidates.append(frozenset(S))
@@ -57,13 +60,17 @@ def add_one(
 
 
 def final_pass(
-    good_pool: list[frozenset[str]], all_splits: list[SplitData]
+    good_pool: list[frozenset[FEATURE_TYPE]],
+    all_splits: list[SplitData],
+    backend: BackendType = PastelGemini,
 ) -> tuple[PastelModel | None, float]:
     """Take a shortlist of 'good' feature sets and do a final evaluation"""
     highest_score = -1.0
     best_model = None
     for candidate in good_pool:
-        metrics, train_model = evaluate_pastel_set(candidate, all_splits, threshold=3.0)
+        metrics, train_model = evaluate_pastel_set(
+            candidate, all_splits, threshold=3.0, backend=backend
+        )
         if metrics["f1"] > highest_score:
             highest_score = metrics["f1"]
             best_model = train_model
@@ -71,7 +78,10 @@ def final_pass(
 
 
 def run_beam_search(
-    all_features: list[str], beta: int = 3, max_iter: int | None = None
+    all_features: Sequence[FEATURE_TYPE],
+    beta: int = 3,
+    max_iter: int | None = None,
+    backend: BackendType = PastelGemini,
 ) -> tuple[PastelModel | None, float]:
     """Main feature selection algorithm. Systematically add more and
     more features, but only keep the best 'beta' models at each iteration.
@@ -79,11 +89,13 @@ def run_beam_search(
     beta is the "beam width", i.e. the number of solutions carried forward from
     each iteration to the next.
     Each iteration adds one new feature, so max_iter is also the maximum number
-    of features to be considered. If set to None, defaults to 'try all features'."""
+    of features to be considered. If set to None, defaults to 'try all features'.
+    backend is the Pastel model class used to answer the questions; every
+    answer is cached locally regardless of which backend is used."""
 
-    current_candidates: dict[frozenset[str], float] = {frozenset(): 0.0}
-    evaluated_sets = []
-    good_pool = []
+    current_candidates: dict[frozenset[FEATURE_TYPE], float] = {frozenset(): 0.0}
+    evaluated_sets: list[frozenset[FEATURE_TYPE]] = []
+    good_pool: list[frozenset[FEATURE_TYPE]] = []
     if not max_iter:
         max_iter = len(all_features)
     all_splits = load_data(num_splits=3)
@@ -92,7 +104,7 @@ def run_beam_search(
         print(f"\nIteration {i}")
         # At each iteration, we take the current best few models and
         # consider adding each available feature to each of them
-        scored_candidates = {}
+        scored_candidates: dict[frozenset[FEATURE_TYPE], float] = {}
         for candidate in current_candidates:
             new_candidates = add_one(candidate, all_features)
             if len(new_candidates) == 0:
@@ -101,7 +113,9 @@ def run_beam_search(
             for nc in new_candidates:
                 if nc not in evaluated_sets:
                     # only evaluate previously unseen sets of features
-                    metrics, _ = evaluate_pastel_set(nc, all_splits, threshold=3.0)
+                    metrics, _ = evaluate_pastel_set(
+                        nc, all_splits, threshold=3.0, backend=backend
+                    )
                     scored_candidates[nc] = metrics["f1"]
                     evaluated_sets.append(nc)
 
@@ -126,7 +140,7 @@ def run_beam_search(
         f"Feature sets compared: {len(evaluated_sets)}; starting final pass of {len(good_pool)}."
     )
     # Process the store of best candidates and evaluate them to find the final best one
-    best_features, best_f1 = final_pass(good_pool, all_splits)
+    best_features, best_f1 = final_pass(good_pool, all_splits, backend=backend)
     return best_features, best_f1
 
 
@@ -135,14 +149,8 @@ def train_model_from_examples(
 ) -> PastelModel:
     """Optimise weights of a model using the training set of sentences"""
     train_sentences = [ex[0] for ex in train_examples]
-    # Get (maybe cached) responses to questions from genAI
+    # Get (maybe cached) responses to every feature - questions and functions
     responses = asyncio.run(train_model.get_answers_to_questions(train_sentences))
-    # Update each response with function responses too.
-    for ts in train_sentences:
-        responses_of_functions: dict[FEATURE_TYPE, float] = {
-            cast(FEATURE_TYPE, f): float(f(ts)) for f in train_model.get_functions()
-        }
-        responses[ts].update(responses_of_functions)
 
     scores = train_model.quantify_answers(list(responses.values()))
 
@@ -160,14 +168,14 @@ def train_model_from_examples(
         feat: float(weight)
         for feat, weight in zip(train_model.model.keys(), new_weights)
     }
-    new_pastel = PastelModel(new_model)
-    return new_pastel
+    return train_model.create_copy_with_different_model(new_model)
 
 
 def evaluate_pastel_set(
-    question_subset: frozenset[str],
+    question_subset: frozenset[FEATURE_TYPE],
     all_splits: list[SplitData],
     threshold: float,
+    backend: BackendType = PastelGemini,
 ) -> tuple[dict[str, float], PastelModel]:
     """Create a Pastel model from a set of features (which is a set of questions) and
     evaluate it.
@@ -178,8 +186,7 @@ def evaluate_pastel_set(
     earlier stages of learning."""
     q_model: dict[FEATURE_TYPE, float] = {q: 0.0 for q in question_subset}
     q_model[BiasType.BIAS] = 0.0
-    train_model = PastelModel(q_model)
-    cached_train_model = CachedPastel.from_pastel(train_model)
+    cached_train_model = CachedPastel.from_pastel(backend(q_model))
     all_metrics = []
 
     for train_examples, test_examples in all_splits:
@@ -237,19 +244,13 @@ if __name__ == "__main__":
                     all_features, beta=5, max_iter=max_iter
                 )
                 print(f"\n\nBest model at end of max_iter={max_iter}:")
+                model_dict: dict[str, float] | None = None
                 if _best_features:
                     print(_best_f1)
                     _best_features.display_model()
                     model_dict = {
-                        (
-                            "BIAS"
-                            if isinstance(k, BiasType)
-                            else (k.__name__ if callable(k) else k)
-                        ): v
-                        for k, v in _best_features.model.items()
+                        feature_as_string(k): v for k, v in _best_features.model.items()
                     }
-                else:
-                    model_dict = None
                 results[max_iter] = {"best_f1": _best_f1, "best_features": model_dict}
                 with open("results.json", "w") as f:
                     json.dump(results, f, indent=2)

@@ -18,15 +18,14 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-# import datasets  # noqa: F401
-import datasets as hf_datasets
+import datasets as hf_datasets  # type: ignore
 import numpy as np
-
-from sklearn.model_selection import StratifiedShuffleSplit
+from sklearn.model_selection import StratifiedShuffleSplit  # type: ignore
 from transformers import AutoTokenizer
 
-from local_models.questions import QUESTIONS
+from local_models.model_registry import assign_model_id
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +80,7 @@ class ModelResult:
     train_seconds: float
 
 
-def load_labelled_data(input_path: Path) -> list[dict]:
+def load_labelled_data(input_path: Path) -> list[dict[str, Any]]:
     records = []
     with input_path.open("r", encoding="utf-8") as f:
         for line in f:
@@ -93,7 +92,7 @@ def load_labelled_data(input_path: Path) -> list[dict]:
 
 
 def build_question_dataset(
-    records: list[dict],
+    records: list[dict[str, Any]],
     question: str,
 ) -> QuestionDataset:
     """Reformat trainig data into a QuestionDataSet object"""
@@ -169,7 +168,7 @@ def split_dataset(
     return train_qd, test_qd
 
 
-def tokenise_dataset(qd: QuestionDataset, tokenizer) -> "datasets.Dataset":
+def tokenise_dataset(qd: QuestionDataset, tokenizer: Any) -> hf_datasets.Dataset:
 
     tokenised = tokenizer(
         qd.inputs,
@@ -182,8 +181,13 @@ def tokenise_dataset(qd: QuestionDataset, tokenizer) -> "datasets.Dataset":
     return hf_datasets.Dataset.from_dict(data)
 
 
-def compute_metrics(eval_pred) -> dict[str, float]:
-    from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+def compute_metrics(eval_pred: Any) -> dict[str, float]:
+    from sklearn.metrics import (  # type: ignore
+        accuracy_score,
+        f1_score,
+        precision_score,
+        recall_score,
+    )
 
     logits, label_ids = eval_pred
     preds = np.argmax(logits, axis=-1)
@@ -205,8 +209,8 @@ def compute_metrics(eval_pred) -> dict[str, float]:
 def finetune_one_model(
     model_key: str,
     model_id: str,
-    train_ds,
-    test_ds,
+    train_ds: hf_datasets.Dataset,
+    test_ds: hf_datasets.Dataset,
     output_dir: Path,
     question_label: str,
     epochs: int,
@@ -275,27 +279,10 @@ def auto_detect_device() -> str:
 
 
 def get_question_id(question: str) -> str:
-    map_path = Path("data/local_models/models/ModernBERT-multilingual/model_map.json")
-    question_map: dict[str, str] = (
-        json.loads(map_path.read_text(encoding="utf-8")) if map_path.exists() else {}
-    )
-
-    if question in question_map:
-        return question_map[question]
-
-    existing_ids = [
-        int(v[1:])
-        for v in question_map.values()
-        if v.startswith("q") and v[1:].isdigit()
-    ]
-    next_id = max(existing_ids, default=-1) + 1
-    new_id = f"q{next_id:02d}"
-    question_map[question] = new_id
-    map_path.parent.mkdir(parents=True, exist_ok=True)
-    map_path.write_text(
-        json.dumps(question_map, indent=4, ensure_ascii=False), encoding="utf-8"
-    )
-    return new_id
+    """The model id (directory name) to train this question's model into.
+    Shared with inference via local_models.model_registry, so that
+    local_answerer looks the model up under the same name."""
+    return assign_model_id(question)
 
 
 def train_one_model(
@@ -448,7 +435,7 @@ def build_one_question_answerer(question: str) -> None:
     csv_path = output_dir / "results.csv"
     init_results_csv(csv_path)
 
-    results = train_one_model(
+    _ = train_one_model(
         question_dataset=question_dataset,
         output_dir=output_dir,
         epochs=epochs,

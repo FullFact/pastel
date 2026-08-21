@@ -9,7 +9,7 @@ import asyncio
 import json
 import time
 from itertools import combinations
-from typing import Dict, List, Tuple
+from typing import Callable, Dict, List, Tuple
 
 import numpy as np
 from sklearn.metrics import f1_score, precision_score, recall_score  # type: ignore
@@ -18,7 +18,11 @@ from sklearn.model_selection import train_test_split  # type: ignore
 from pastel.models import FEATURE_TYPE, BiasType, Sentence
 from pastel.optimise_weights import lin_reg
 from pastel.pastel import EXAMPLES_TYPE, PastelModel
+from pastel.pastel_gemini import PastelGemini
 from training.cached_pastel import CachedPastel
+
+# Anything that turns a model dict into a Pastel model, i.e. a PastelModel subclass
+BackendType = Callable[[dict[FEATURE_TYPE, float]], PastelModel]
 
 
 def load_examples(filename: str) -> List[EXAMPLES_TYPE]:
@@ -173,7 +177,7 @@ def run_crossvalidation(
         train_sentences = [ex[0] for ex in train_examples]
 
         # Create a new model for training to avoid modifying the input model
-        train_model = PastelModel(pastel.model)
+        train_model = pastel.create_copy_with_different_model(dict(pastel.model))
         cached_train_model = CachedPastel.from_pastel(train_model)
 
         # Get cached responses and learn weights
@@ -192,9 +196,12 @@ def run_crossvalidation(
             if sentence in score_lookup
         ]
         new_weights = lin_reg(scores, np.array(train_scores_w_answers))
-        train_model.model = {
-            feat: weight for feat, weight in zip(train_model.model.keys(), new_weights)
-        }
+        train_model = train_model.create_copy_with_different_model(
+            {
+                feat: float(weight)
+                for feat, weight in zip(train_model.model.keys(), new_weights)
+            }
+        )
 
         # Evaluate on both sets
         train_metrics = evaluate_model(train_model, train_examples)
@@ -218,7 +225,7 @@ def run_crossvalidation(
     test_stats = calculate_stats(test_metrics_list)
 
     # Print results
-    print("Mean test results from {n_trials} trials:")
+    print(f"Mean test results from {n_trials} trials:")
     for metric in test_stats["mean"]:
         print(
             f"- {metric}: {test_stats['mean'][metric]:.4f} ± {test_stats['std'][metric]:.4f}",
@@ -236,6 +243,7 @@ def evaluate_question_combinations(
     max_questions: int = 20,
     n_trials: int = 3,
     random_seed: int | None = None,
+    backend: BackendType = PastelGemini,
 ) -> Dict[Tuple[str, ...], Dict[str, Dict[str, Dict[str, float]]]]:
     """
     Evaluate all possible combinations of questions by running cross-validation on each subset.
@@ -250,6 +258,8 @@ def evaluate_question_combinations(
         max_questions: Maximum number of questions in each combination
         n_trials: Number of cross-validation trials for each combination
         random_seed: Base random seed for reproducible splits
+        backend: Pastel model class used to answer the questions. Answers are
+            cached locally whichever backend is used.
 
     Returns:
         Dictionary mapping question combinations to their performance metrics:
@@ -294,7 +304,7 @@ def evaluate_question_combinations(
             # Create a new model with this subset of questions
             q_model: dict[FEATURE_TYPE, float] = {q: 0.0 for q in question_subset}
             q_model[BiasType.BIAS] = 0.0
-            model = PastelModel(q_model)
+            model = backend(q_model)
 
             # Run cross-validation
             train_stats, test_stats = run_crossvalidation(
@@ -337,7 +347,7 @@ def evaluate_question_combinations(
                 )
                 _ = [print("   * ", q) for q in best_f1[1]]
                 # Need to add bias term to new model, as it's currently just a list of questions
-                pastel_to_save = PastelModel.from_feature_list(list(best_f1[1]))
+                pastel_to_save = model.from_feature_list(list(best_f1[1]))
                 pastel_to_save.save_model(f"best_so_far{len(best_f1[1])}.json")
 
     # Print final timing summary

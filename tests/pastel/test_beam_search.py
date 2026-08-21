@@ -1,12 +1,12 @@
 from unittest.mock import Mock, patch
 
-from pastel.models import BiasType
-from pastel.pastel import PastelModel
+from pastel.models import FEATURE_TYPE, BiasType
+from pastel.pastel_gemini import PastelGemini
 from training.beam_search import add_one, run_beam_search
 
 
-def test_add_one():
-    current_set = frozenset(["a", "b"])
+def test_add_one() -> None:
+    current_set: frozenset[FEATURE_TYPE] = frozenset(["a", "b"])
     all_features = ["a", "b", "c", "d"]
     new_sets = add_one(current_set, all_features)
     print(new_sets)
@@ -16,8 +16,8 @@ def test_add_one():
     assert sum("d" in s for s in new_sets) == 1
 
 
-def test_add_one_empty_set():
-    current_set = frozenset()
+def test_add_one_empty_set() -> None:
+    current_set: frozenset[FEATURE_TYPE] = frozenset()
     all_features = ["a", "b"]
     new_sets = add_one(current_set, all_features)
     assert len(new_sets) == 2
@@ -25,13 +25,16 @@ def test_add_one_empty_set():
     assert any("b" in s for s in new_sets)
 
 
-def test_beam_search():
+def test_beam_search() -> None:
     # Very weak test! But confirms it returns the right shaped response
     all_features = ["a", "b", "c", "d"]
-    with patch(
-        "training.beam_search.evaluate_pastel_set", new_callable=Mock
-    ) as mock_eval:
-        pastel_model = PastelModel(
+    with (
+        patch("training.beam_search.load_data", new=Mock(return_value=[([], [])])),
+        patch(
+            "training.beam_search.evaluate_pastel_set", new_callable=Mock
+        ) as mock_eval,
+    ):
+        pastel_model = PastelGemini(
             {
                 BiasType.BIAS: 1.0,
                 "a": -3.0,

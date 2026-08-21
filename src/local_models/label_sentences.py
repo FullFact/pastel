@@ -13,22 +13,33 @@ Outputs JSONL file, one sentence per line, e.g:
 {"sentence_text": ..., "score": 5.0, "claim_types": ["quantity"], "question_answers": {"Is this making a claim that is too good to be true?": 1.0, ...}}
 
 Usage:
-    python scripts/encoder_experiment/label_sentences.py \\
-        --input /path/to/fullfact-2026-03-16-claims.json \\
-        --output scripts/encoder_experiment/labelled_sentences.jsonl \\
+    python -m local_models.label_sentences \\
+        --question "Is this sentence a joke or satirical?" \\
+        --input data/local_models/fullfact-2026-03-31-claims.json \\
+        --output data/local_models/labelled_sentences.jsonl \\
         --batch-size 20
 """
 
+import argparse
 import asyncio
 import json
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
-from local_models.questions import QUESTIONS
-from pastel.models import BiasType, Sentence
+from pastel.models import FEATURE_TYPE, Sentence
 from pastel.optimise_weights import load_examples
 from pastel.pastel import PastelModel
+from pastel.pastel_gemini import PastelGemini
+
+# One normalised input/output row: sentence text plus its metadata and,
+# on output, the answers gathered so far.
+ROW_TYPE = dict[str, Any]
+
+DEFAULT_INPUT = Path("data/local_models/fullfact-2026-03-31-claims.json")
+DEFAULT_OUTPUT = Path("data/local_models/labelled_sentences.jsonl")
+DEFAULT_BATCH_SIZE = 20
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logging.getLogger("google.ai.generativelanguage").setLevel(logging.WARNING)
@@ -37,7 +48,7 @@ logging.getLogger("google_genai.models").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-def load_fullfact_claims(filename: str) -> list[dict]:
+def load_fullfact_claims(filename: str) -> list[ROW_TYPE]:
     """Load the Full Fact claims JSON export (a JSON array of article/sentence objects).
 
     Maps to the same internal format as load_examples():
@@ -68,16 +79,25 @@ def load_fullfact_claims(filename: str) -> list[dict]:
     return rows
 
 
-def load_input(input_path: Path) -> list[dict]:
+def load_input(input_path: Path) -> list[ROW_TYPE]:
     """Auto-detect format by extension and return a list of normalised row dicts."""
-    # if input_path.suffix.lower() == ".json":
-    return load_fullfact_claims(str(input_path))
-    # return load_examples(str(input_path))
+    if input_path.suffix.lower() == ".json":
+        return load_fullfact_claims(str(input_path))
+    # .jsonl is the Pastel training format, which is already normalised apart
+    # from the score being a string.
+    return [
+        {
+            "sentence_text": row["sentence_text"],
+            "score": float(row["score"]) if row.get("score") is not None else None,
+            "claim_types": row.get("claim_types", []),
+        }
+        for row in load_examples(str(input_path))
+    ]
 
 
 def build_pastel(questions: list[str]) -> PastelModel:
     """Create a Pastel with only the experiment questions (no functions, no bias beyond the auto-added one)."""
-    return PastelModel.from_feature_list(questions)
+    return PastelGemini.from_feature_list(questions)
 
 
 def load_already_labelled(output_path: Path, question: str) -> set[str]:
@@ -99,10 +119,10 @@ def load_already_labelled(output_path: Path, question: str) -> set[str]:
 
 
 def format_output_record(
-    original_row: dict,
-    answers: dict,
+    original_row: ROW_TYPE,
+    answers: dict[FEATURE_TYPE, float],
     questions: list[str],
-) -> dict:
+) -> ROW_TYPE:
     """Merge original JSONL fields with question answers, keeping only string-keyed answers."""
     question_answers = {
         k: v for k, v in answers.items() if isinstance(k, str) and k in questions
@@ -117,14 +137,14 @@ def format_output_record(
 
 async def label_batch(
     pastel: PastelModel,
-    batch_rows: list[dict],
+    batch_rows: list[ROW_TYPE],
     questions: list[str],
-) -> list[dict]:
+) -> list[ROW_TYPE]:
     """Call Gemini (via Pastel) to label a batch of rows, return formatted output records."""
     sentences = [
         Sentence(
             sentence_text=row["sentence_text"],
-            claim_type=tuple(row["claim_types"]) if row.get("claim_types") else None,
+            claim_type=tuple(row.get("claim_types") or ()),
         )
         for row in batch_rows
     ]
@@ -141,8 +161,8 @@ async def label_batch(
     return records
 
 
-def update_records(new_records: list[dict], output_path: Path) -> None:
-    existing: dict[str, dict] = {}
+def update_records(new_records: list[ROW_TYPE], output_path: Path) -> None:
+    existing: dict[str, ROW_TYPE] = {}
     if output_path.exists():
         with output_path.open("r", encoding="utf-8") as f:
             for line in f:
@@ -164,11 +184,18 @@ def update_records(new_records: list[dict], output_path: Path) -> None:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-async def main(question: str) -> None:
-    input_path = Path("data/local_models/fullfact-2026-03-31-claims.jsonl")
-    output_path = Path("data/local_models/labelled_sentences.jsonl")
-    batch_size = 20
+async def main(
+    question: str,
+    input_path: Path = DEFAULT_INPUT,
+    output_path: Path = DEFAULT_OUTPUT,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    limit: int | None = None,
+) -> None:
+    """Label every sentence in `input_path` with an answer to `question`.
 
+    `limit` caps how many sentences are sent, which is useful for a cheap
+    smoke test before committing to labelling the whole file.
+    """
     if not input_path.exists():
         logger.error("Input file not found: %s", input_path)
         sys.exit(1)
@@ -181,6 +208,8 @@ async def main(question: str) -> None:
         logger.info("Skipping %d already-labelled sentences", len(already_done))
 
     pending = [row for row in rows if row["sentence_text"] not in already_done]
+    if limit is not None:
+        pending = pending[:limit]
     if not pending:
         logger.info("All sentences already labelled. Nothing to do.")
         return
@@ -206,8 +235,6 @@ async def main(question: str) -> None:
         )
         # not sure if needed; might reduce rate limits/threading errors:
         await asyncio.sleep(1.0)
-        if i >= 200:
-            break
 
     logger.info("Done. %d sentences labelled -> %s", total_written, output_path)
     # Allow gRPC background threads (used by the Gemini client) to drain
@@ -215,7 +242,34 @@ async def main(question: str) -> None:
     await asyncio.sleep(1.5)
 
 
-if __name__ == "__main__":
-    new_question = "Is this sentence a joke or satirical?"
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--question", required=True, help="The single question to label with."
+    )
+    parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Only label this many sentences, for a cheap smoke test.",
+    )
+    return parser.parse_args()
 
-    asyncio.run(main(new_question))
+
+if __name__ == "__main__":
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    args = parse_args()
+    asyncio.run(
+        main(
+            args.question,
+            input_path=args.input,
+            output_path=args.output,
+            batch_size=args.batch_size,
+            limit=args.limit,
+        )
+    )

@@ -6,13 +6,26 @@ At Full Fact, this approach is used to help identify claims that are worth bring
 
 ### Code overview
 
-The `pastel/optimise_weights.py` module calculates the parameters of the regression model, and requires a list of sentences with associated checkworthy scores. 
+The `pastel/pastel.py` module defines `PastelModel`: the features-to-weights model itself, saving and loading it, and turning a set of answers into a single score. It is abstract - answering the questions is left to a backend, which is the only part that differs between them:
 
-The `pastel/pastel.py` module passes the text and questions to a genAI model and uses the regression model to calculate a single score.
+* `pastel/pastel_gemini.py` — `PastelGemini` sends all of a model's questions to Gemini in one prompt per sentence.
+* `pastel/pastel_local.py` — `PastelLocal` answers each question with its own locally fine-tuned encoder model (see `local_models/README.md`).
+
+Both are drop-in replacements for each other, so pick one at runtime with `pastel.get_backend()` rather than by changing imports:
+
+```python
+from pastel import get_backend
+
+pastel = get_backend("local").load_model("my_model.json")   # or "gemini"
+```
+
+With no argument, `get_backend()` reads the `PASTEL_BACKEND` environment variable and falls back to Gemini. Each demo script in `scripts/` takes the same choice as a `--backend` flag.
+
+The `pastel/optimise_weights.py` module calculates the parameters of the regression model, and requires a list of sentences with associated checkworthy scores.
 
 Currently, this is used by the genai-checkworthy repo but in the future, the same approach might be used to analyse text for other features such as propaganda, bias, reliability etc.
 
-`training/cached_pastel.py` uses a local SQLite database to cache Gemini's responses. This saves a lot of time and effort when re-analysing the same sentences over and over again, so is useful for experimenting with/optimising Pastel models, but should not be used in production. (It won't help there anyway, as each sentence is only ever seen once.) Similarly, `training/crossvalidate_pastel.py` and `training/beam_search.py` are scripts to compare a large number of Pastel models (potentially millions!) to help find a good combination of questions. `beam_search` uses heuristics and is a lot faster. There is a sample database of cached answers in `data/sample_responses.db` that can be used to initialise the DatabaseManager.
+`training/cached_pastel.py` wraps any backend and uses a local SQLite database to cache its responses. This saves a lot of time and effort when re-analysing the same sentences over and over again, so is useful for experimenting with/optimising Pastel models, but should not be used in production. (It won't help there anyway, as each sentence is only ever seen once.) Similarly, `training/crossvalidate_pastel.py` and `training/beam_search.py` are scripts to compare a large number of Pastel models (potentially millions!) to help find a good combination of questions. `beam_search` uses heuristics and is a lot faster. There is a sample database of cached answers in `data/sample_responses.db` that can be used to initialise the DatabaseManager.
 
 ### Pastel Functions and Claim Types
 
