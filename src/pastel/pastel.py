@@ -4,16 +4,14 @@
 import asyncio
 import json
 import logging
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Sequence, Tuple, TypeAlias
 
 import numpy as np
 import numpy.typing as npt
 import tenacity
-from genai_utils.gemini import run_prompt_async
-from google.api_core import exceptions as core_exceptions
 
-from local_models.local_answerer import answer_question
 from pastel import pastel_functions
 from pastel.models import FEATURE_TYPE, BiasType, ScoreAndAnswers, Sentence
 
@@ -22,13 +20,7 @@ _logger = logging.getLogger(__name__)
 EXAMPLES_TYPE = Tuple[Sentence, float]
 ARRAY_TYPE: TypeAlias = npt.NDArray[np.float64]
 
-RETRYABLE_EXCEPTIONS = (
-    core_exceptions.ResourceExhausted,
-    core_exceptions.InternalServerError,
-    core_exceptions.ServiceUnavailable,
-    core_exceptions.DeadlineExceeded,
-    ValueError,
-)
+RETRYABLE_EXCEPTIONS: tuple[type[Exception]] = (ValueError,)
 
 
 def feature_as_string(feature: FEATURE_TYPE) -> str:
@@ -49,11 +41,14 @@ def log_retry_attempt(retry_state: tenacity.RetryCallState) -> None:
     )
 
 
-class Pastel:
+class PastelModel(ABC):
     """Uses list of yes/no questions and functions to analyse a piece of text.
     Each of these features has an associated weight which is used to generate
     the final score for the text.
     The main model is a dict mapping features to weights.
+
+    Subclasses of this abstract class must implement
+    their own version of `get_answers_to_questions`.
     """
 
     def __init__(self, model: dict[FEATURE_TYPE, float]) -> None:
@@ -82,7 +77,7 @@ class Pastel:
             print(f"  {name:20}: {weight:.4f}")
 
     @staticmethod
-    def from_feature_list(feature_names: Sequence[FEATURE_TYPE]) -> "Pastel":
+    def from_feature_list(feature_names: Sequence[FEATURE_TYPE]) -> "PastelModel":
         """Take a list of features without weights. Initialise new
         model with all weights set to zero, ready for training"""
         new_model = dict()
@@ -93,10 +88,10 @@ class Pastel:
             else:
                 new_model[feature] = 0.0
         new_model[BiasType.BIAS] = 0.0
-        return Pastel(new_model)
+        return PastelModel(new_model)
 
     @staticmethod
-    def load_model(model_file: str) -> "Pastel":
+    def load_model(model_file: str) -> "PastelModel":
         """Load model from JSON file. Convert any functions in the model
         from their names to Callable functions."""
 
@@ -112,7 +107,7 @@ class Pastel:
             else:
                 new_model[feature] = weight
 
-        return Pastel(new_model)
+        return PastelModel(new_model)
 
     def save_model(self, model_path: str) -> None:
         """
@@ -158,128 +153,15 @@ class Pastel:
 
         return functions
 
-    def make_prompt(self, sentence: Sentence) -> str:
-        """Makes a prompt for a single given sentence."""
-
-        questions = self.get_questions()
-
-        prompt = """
-Your task is to answer a series of questions about a sentence. Ensure your answers are truthful and reliable.
-You are expected to answer with ‘Yes’ or ‘No’ but you are also allowed to answer with ‘Unsure’ if you do not
-have enough information or context to provide a reliable answer.
-Your response should be limited to the question number and yes/no/unsure.
-Example output:
-0. Yes
-1. Yes
-2. No
-
-Here are the questions:
-[QUESTIONS]
-
-Here is the sentence: ```[SENT1]```
-
-"""
-        # extract the PastelFeatures whose type is string
-        prompt = prompt.replace(
-            "[QUESTIONS]",
-            "\n".join([f"Question {idx} {q}" for idx, q in enumerate(questions)]),
-        )
-        prompt = prompt.replace("[SENT1]", sentence.sentence_text)
-
-        return prompt
-
-    @staticmethod
-    def _label_mapping(label: str) -> float:
-        """Map yes/no/other response to 1/0/0.5 respectively.
-        If model responds 'unsure', 'don't know', 'uncertain' etc. then return 0.5.
-        """
-        label_map = {"y": 1.0, "n": 0.0}
-        return label_map.get(label[0].lower(), 0.5)
-
-    @tenacity.retry(
-        wait=tenacity.wait_random_exponential(multiplier=1, max=60),
-        stop=tenacity.stop_after_attempt(3),
-        retry=tenacity.retry_if_exception_type(RETRYABLE_EXCEPTIONS),
-        before=log_retry_attempt,
-    )
-    async def _get_llm_answers_for_single_sentence(
-        self, sentence: Sentence
-    ) -> dict[FEATURE_TYPE, float]:
-        """Runs all genAI questions on the given sentence."""
-        sent_answers: dict[FEATURE_TYPE, float] = {}
-        prompt = self.make_prompt(sentence)
-
-        raw_output = await run_prompt_async(prompt)
-        raw_output = raw_output.strip().lower()
-
-        if "question" in raw_output:
-            output = raw_output[raw_output.index("0") :]
-        else:
-            output = raw_output
-        answers = output.split("\n")  # e.g. ["1. yes", "2. no"]
-
-        if len(answers) == len(self.get_questions()):
-            for q, a in zip(self.get_questions(), answers):
-                sent_answers[q] = self._label_mapping(a.split()[1])
-
-        else:
-            raise ValueError(
-                f"Failed to parse output for the sentence: {sentence.sentence_text}. Output received: {output}"
-            )
-        return sent_answers
-
-    def get_local_answers_for_single_sentence(
-        self, sentence: Sentence
-    ) -> dict[FEATURE_TYPE, float]:
-        sent_answers: dict[FEATURE_TYPE, float] = {}
-        questions = self.get_questions()
-        for question in questions:
-            response = answer_question(question, sentence.sentence_text)
-            sent_answers[question] = response
-
-        return sent_answers
-
-    def _get_function_answers_for_single_sentence(
-        self, sentence: Sentence
-    ) -> dict[FEATURE_TYPE, float]:
-        """Runs all the functions in the model on the given sentence."""
-        sent_answers: dict[FEATURE_TYPE, float] = {}
-        for f in self.get_functions():
-            sent_answers[f] = f(sentence)
-        return sent_answers
-
-    async def _get_answers_for_single_sentence(
-        self, sentence: Sentence
-    ) -> dict[FEATURE_TYPE, float]:
-        # TODO: handle switching between Gemini & local models better - pass through new flag?
-        # First, get answers to all the questions from genAI:
-        llm_sent_answers = await self._get_llm_answers_for_single_sentence(sentence)
-        # print("_get_answers_for_single_sentence gives ", llm_sent_answers)
-        # llm_sent_answers = dict()
-        # local_sent_answers = self.get_local_answers_for_single_sentence(sentence)
-        local_sent_answers = dict()
-
-        # Second, get values from the functions
-        function_sent_answers = self._get_function_answers_for_single_sentence(sentence)
-
-        return local_sent_answers | llm_sent_answers | function_sent_answers
-
+    @abstractmethod
     async def get_answers_to_questions(
         self, sentences: list[Sentence]
     ) -> dict[Sentence, dict[FEATURE_TYPE, float]]:
-        """Embed each example into the prompt and pass to genAI, then
-        get answers for non-genAI functions.
-        For each sentence, this Returns a dictionary mapping features to scores."""
-
-        jobs = [
-            self._get_answers_for_single_sentence(sentence) for sentence in sentences
-        ]
-        answers = await asyncio.gather(*jobs, return_exceptions=True)
-
-        # return the answers which didn't cause an exception
-        return {
-            s: a for s, a in zip(sentences, answers) if not isinstance(a, BaseException)
-        }
+        """
+        Get answers for a given list of sentences.
+        For each sentence, this Returns a dictionary mapping features to scores.
+        """
+        raise NotImplementedError
 
     def quantify_answers(
         self, answers: Sequence[dict[FEATURE_TYPE, float]]

@@ -1,7 +1,7 @@
 from unittest.mock import Mock, patch
 
 from pastel.models import BiasType
-from pastel.pastel import Pastel
+from pastel.pastel import PastelModel
 from training.beam_search import add_one, run_beam_search
 
 
@@ -31,7 +31,7 @@ def test_beam_search():
     with patch(
         "training.beam_search.evaluate_pastel_set", new_callable=Mock
     ) as mock_eval:
-        pastel_model = Pastel(
+        pastel_model = PastelModel(
             {
                 BiasType.BIAS: 1.0,
                 "a": -3.0,

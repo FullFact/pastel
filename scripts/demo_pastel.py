@@ -5,10 +5,10 @@ import tempfile
 
 from pastel.models import BiasType, Sentence
 from pastel.optimise_weights import learn_weights
-from pastel.pastel import Pastel
+from pastel.pastel import PastelModel
 
 
-def demo_predict(pasteliser: Pastel) -> None:
+def demo_predict(pasteliser: PastelModel) -> None:
     # pass a few examples & see what scores we get:
     texts = [
         "Over a similar time period, reported mental health problems have also jumped from 8% to 10% of working-age people to between 13% and 15%, according to the Institute for Fiscal Studies.",
@@ -27,7 +27,7 @@ def demo_predict(pasteliser: Pastel) -> None:
     _ = [print(f"{scores[e].score:4.1f} \t{e.sentence_text}") for e in examples]
 
 
-def demo_learn(pasteliser: Pastel) -> Pastel:
+def demo_learn(pasteliser: PastelModel) -> PastelModel:
     training_egs = [
         {
             "sentence_text": '"Ending tax breaks for private schools will raise £1.8bn a year by 2029/30 to help deliver 6,500 new teachers and raise school standards, supporting the 94 per cent of children in state schools to achieve and thrive.',
@@ -83,7 +83,7 @@ def demo() -> None:
         "Is this sentence about olive oil?",
         "Is this about a disease or illness?",
     ]
-    pasteliser = Pastel.from_feature_list(questions)
+    pasteliser = PastelModel.from_feature_list(questions)
     demo_learn(pasteliser)
     pasteliser.save_model("scripts/new_demo_pastel_model.json")
     demo_predict(pasteliser)
@@ -98,20 +98,20 @@ def demo() -> None:
         "Is this about a disease or illness?": 0.3,
     }
 
-    pasteliser = Pastel(model)
+    pasteliser = PastelModel(model)
     demo_predict(pasteliser)
     print("-" * 100)
 
     # load a model from a file
     print("LOAD FROM FILE")
     print("-" * 100)
-    pasteliser = Pastel.load_model("scripts/example_pastel_model.json")
+    pasteliser = PastelModel.load_model("scripts/example_pastel_model.json")
     demo_predict(pasteliser)
 
 
 if __name__ == "__main__":
     demo()
-    pastel = Pastel.load_model("scripts/example_pastel_model.json")
+    pastel = PastelModel.load_model("scripts/example_pastel_model.json")
     demo_predict(pastel)
     print("Old model:")
     pastel.display_model()

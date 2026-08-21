@@ -1,0 +1,147 @@
+import asyncio
+import logging
+from textwrap import dedent
+
+import tenacity
+from genai_utils.gemini import run_prompt_async
+from google.api_core import exceptions as core_exceptions
+
+from pastel.models import Sentence
+from pastel.pastel import FEATURE_TYPE, PastelModel
+
+_logger = logging.getLogger(__name__)
+
+RETRYABLE_EXCEPTIONS = (
+    core_exceptions.ResourceExhausted,
+    core_exceptions.InternalServerError,
+    core_exceptions.ServiceUnavailable,
+    core_exceptions.DeadlineExceeded,
+    ValueError,
+)
+
+
+def log_retry_attempt(retry_state: tenacity.RetryCallState) -> None:
+    """Log the retry attempt number and the exception that occurred."""
+    if (not retry_state.outcome) or (not retry_state.next_action):
+        return
+
+    _logger.info(
+        f"Retrying request due to {retry_state.outcome.exception()}..."
+        f"Attempt #{retry_state.attempt_number}, "
+        f"waiting {retry_state.next_action.sleep:.2f} seconds."
+    )
+
+
+class PastelGemini(PastelModel):
+    async def get_answers_to_questions(
+        self, sentences: list[Sentence]
+    ) -> dict[Sentence, dict[FEATURE_TYPE, float]]:
+        """
+        Get answers for a given list of sentences.
+        For each sentence, this Returns a dictionary mapping features to scores.
+        """
+        jobs = [
+            self._get_answers_for_single_sentence(sentence) for sentence in sentences
+        ]
+        answers = await asyncio.gather(*jobs, return_exceptions=True)
+
+        # return the answers which didn't cause an exception
+        return {
+            s: a for s, a in zip(sentences, answers) if not isinstance(a, BaseException)
+        }
+
+    def _make_prompt(self, sentence: Sentence) -> str:
+        """Makes a prompt for a single given sentence."""
+
+        questions = self.get_questions()
+
+        prompt = dedent(
+            """
+            Your task is to answer a series of questions about a sentence. Ensure your answers are truthful and reliable.
+            You are expected to answer with ‘Yes’ or ‘No’ but you are also allowed to answer with ‘Unsure’ if you do not
+            have enough information or context to provide a reliable answer.
+            Your response should be limited to the question number and yes/no/unsure.
+            Example output:
+            0. Yes
+            1. Yes
+            2. No
+            
+            Here are the questions:
+            [QUESTIONS]
+            
+            Here is the sentence: ```[SENT1]```
+            """
+        )
+        # extract the PastelFeatures whose type is string
+        prompt = prompt.replace(
+            "[QUESTIONS]",
+            "\n".join([f"Question {idx} {q}" for idx, q in enumerate(questions)]),
+        )
+        prompt = prompt.replace("[SENT1]", sentence.sentence_text)
+
+        return prompt
+
+    @staticmethod
+    def _label_mapping(label: str) -> float:
+        """Map yes/no/other response to 1/0/0.5 respectively.
+        If model responds 'unsure', 'don't know', 'uncertain' etc. then return 0.5.
+        """
+        label_map = {"y": 1.0, "n": 0.0}
+        return label_map.get(label[0].lower(), 0.5)
+
+    @tenacity.retry(
+        wait=tenacity.wait_random_exponential(multiplier=1, max=60),
+        stop=tenacity.stop_after_attempt(3),
+        retry=tenacity.retry_if_exception_type(RETRYABLE_EXCEPTIONS),
+        before=log_retry_attempt,
+    )
+    async def _get_llm_answers_for_single_sentence(
+        self, sentence: Sentence
+    ) -> dict[FEATURE_TYPE, float]:
+        """Runs all genAI questions on the given sentence."""
+        sent_answers: dict[FEATURE_TYPE, float] = {}
+        prompt = self._make_prompt(sentence)
+
+        raw_output = await run_prompt_async(prompt)
+        raw_output = raw_output.strip().lower()
+
+        if "question" in raw_output:
+            output = raw_output[raw_output.index("0") :]
+        else:
+            output = raw_output
+        answers = output.split("\n")  # e.g. ["1. yes", "2. no"]
+
+        if len(answers) == len(self.get_questions()):
+            for q, a in zip(self.get_questions(), answers):
+                sent_answers[q] = self._label_mapping(a.split()[1])
+
+        else:
+            raise ValueError(
+                f"Failed to parse output for the sentence: {sentence.sentence_text}. Output received: {output}"
+            )
+        return sent_answers
+
+    def _get_function_answers_for_single_sentence(
+        self, sentence: Sentence
+    ) -> dict[FEATURE_TYPE, float]:
+        """Runs all the functions in the model on the given sentence."""
+        sent_answers: dict[FEATURE_TYPE, float] = {}
+        for f in self.get_functions():
+            sent_answers[f] = f(sentence)
+        return sent_answers
+
+    async def _get_answers_for_single_sentence(
+        self, sentence: Sentence
+    ) -> dict[FEATURE_TYPE, float]:
+        # TODO: handle switching between Gemini & local models better - pass through new flag?
+        # First, get answers to all the questions from genAI:
+        llm_sent_answers = await self._get_llm_answers_for_single_sentence(sentence)
+        # print("_get_answers_for_single_sentence gives ", llm_sent_answers)
+        # llm_sent_answers = dict()
+        # local_sent_answers = self.get_local_answers_for_single_sentence(sentence)
+        local_sent_answers = dict()
+
+        # Second, get values from the functions
+        function_sent_answers = self._get_function_answers_for_single_sentence(sentence)
+
+        return local_sent_answers | llm_sent_answers | function_sent_answers

@@ -26,10 +26,9 @@ import sys
 from pathlib import Path
 
 from local_models.questions import QUESTIONS
-
 from pastel.models import BiasType, Sentence
 from pastel.optimise_weights import load_examples
-from pastel.pastel import Pastel
+from pastel.pastel import PastelModel
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logging.getLogger("google.ai.generativelanguage").setLevel(logging.WARNING)
@@ -76,9 +75,9 @@ def load_input(input_path: Path) -> list[dict]:
     # return load_examples(str(input_path))
 
 
-def build_pastel(questions: list[str]) -> Pastel:
+def build_pastel(questions: list[str]) -> PastelModel:
     """Create a Pastel with only the experiment questions (no functions, no bias beyond the auto-added one)."""
-    return Pastel.from_feature_list(questions)
+    return PastelModel.from_feature_list(questions)
 
 
 def load_already_labelled(output_path: Path, question: str) -> set[str]:
@@ -117,7 +116,7 @@ def format_output_record(
 
 
 async def label_batch(
-    pastel: Pastel,
+    pastel: PastelModel,
     batch_rows: list[dict],
     questions: list[str],
 ) -> list[dict]:

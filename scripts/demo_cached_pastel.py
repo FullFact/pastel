@@ -4,7 +4,7 @@ long-term caching responses"""
 import asyncio
 
 from pastel.models import Sentence
-from pastel.pastel import Pastel
+from pastel.pastel import PastelModel
 from training.cached_pastel import CachedPastel
 from training.db_manager import DatabaseManager
 
@@ -27,7 +27,7 @@ if __name__ == "__main__":
 
     MODEL_LOCATION = "scripts/example_pastel_model.json"
     # Load regular Pastel model and wrap into to a CachedPastel
-    pastel = Pastel.load_model(MODEL_LOCATION)
+    pastel = PastelModel.load_model(MODEL_LOCATION)
     cached_pastel = CachedPastel.from_pastel(pastel)
     cached_pastel.display_model()
 

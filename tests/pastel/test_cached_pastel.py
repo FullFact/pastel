@@ -1,14 +1,14 @@
 import numpy as np
 
 from pastel.models import FEATURE_TYPE, BiasType, Sentence
-from pastel.pastel import Pastel
+from pastel.pastel import PastelModel
 from training.cached_pastel import CachedPastel
 
 Q1 = "Is the statement factual?"
 Q2 = "Does the statement contain bias?"
 
 
-class DummyPastel(Pastel):
+class DummyPastel(PastelModel):
     def __init__(self, questions=None):
         if questions is None:
             questions = {
@@ -94,7 +94,7 @@ async def test_make_predictions_caching(monkeypatch):
         _ = [print({sentence: {q: 1.0 for q in self.model}}) for sentence in sentences]
         return {sentence: {q: 1.0 for q in self.model} for sentence in sentences}
 
-    monkeypatch.setattr(Pastel, "get_answers_to_questions", counted_get_answers)
+    monkeypatch.setattr(PastelModel, "get_answers_to_questions", counted_get_answers)
     # First call should call get_answers_to_questions and populate the cache
     assert call_count["count"] == 0, "get_answers_to_questions hasn't been called yet"
     results1 = await cached.get_answers_to_questions(sentences)

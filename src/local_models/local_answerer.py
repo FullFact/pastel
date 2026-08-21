@@ -14,6 +14,7 @@ MODEL_CATEGORY = "ModernBERT-multilingual"  # only using this one for now
 RESULTS_DIR = Path(__file__).parent / "results"
 MODELS_DIR = Path("data/local_models/models")
 MAX_LENGTH = 128
+BATCH_SIZE = 32
 
 _model_cache: dict[int, tuple] = {}
 
@@ -46,32 +47,43 @@ def preload_models():
         _model_cache[question_index] = _load_model_for_question(question_index)
 
 
-def answer_question(question: str, sentence: str) -> float:
+def answer_question(question: str, sentences: list[str]) -> list[float]:
+    """
+    Answers the question for the given list of sentences.
+    Returns one score per sentence, in the same order as the input.
+    """
     import torch
 
     try:
         question_index = QUESTIONS.index(question)
-    except:
+    except ValueError:
         print("Error: unknown question ", question)
-        return 0.0
+        return [0.0] * len(sentences)
 
     if question_index not in _model_cache:
         _model_cache[question_index] = _load_model_for_question(question_index)
 
     model, tokenizer = _model_cache[question_index]
 
-    input_text = question + " " + sentence
-    inputs = tokenizer(
-        input_text,
-        truncation=True,
-        max_length=MAX_LENGTH,
-        return_tensors="pt",
-    )
+    input_text = [question + " " + sentence for sentence in sentences]
 
-    with torch.no_grad():
-        logits = model(**inputs).logits
+    answers: list[float] = []
+    for start in range(0, len(input_text), BATCH_SIZE):
+        batch = input_text[start : start + BATCH_SIZE]
+        inputs = tokenizer(
+            batch,
+            truncation=True,
+            padding=True,
+            max_length=MAX_LENGTH,
+            return_tensors="pt",
+        )
 
-    return float(torch.argmax(logits, dim=-1).item())
+        with torch.no_grad():
+            logits = model(**inputs).logits
+
+        answers.extend(torch.argmax(logits, dim=-1).float().tolist())
+
+    return answers
 
 
 if __name__ == "__main__":
@@ -81,8 +93,9 @@ if __name__ == "__main__":
         "Scientists have shown that tamoxifen patients are more likely to develop deadly blood clots and cancer.",
         "Rubbing olive oil onto a lump under your skin will make it disappear in a few days.",
     ]
-    for sentence in sentences:
-        print(f"\n{"*"*80}\n{sentence}\n")
+    answers = {question: answer_question(question, sentences) for question in QUESTIONS}
+
+    for idx, sentence in enumerate(sentences):
+        print(f"\n{'*' * 80}\n{sentence}\n")
         for question in QUESTIONS:
-            response = answer_question(question, sentence)
-            print(f"{question[:60]:60s}  {response}")
+            print(f"{question[:60]:60s}  {answers[question][idx]}")

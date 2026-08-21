@@ -17,7 +17,7 @@ from sklearn.model_selection import train_test_split  # type: ignore
 
 from pastel.models import FEATURE_TYPE, BiasType, Sentence
 from pastel.optimise_weights import lin_reg
-from pastel.pastel import EXAMPLES_TYPE, Pastel
+from pastel.pastel import EXAMPLES_TYPE, PastelModel
 from training.cached_pastel import CachedPastel
 
 
@@ -48,7 +48,7 @@ def load_examples(filename: str) -> List[EXAMPLES_TYPE]:
 
 
 def prepare_crossvalidation_data(
-    pastel: Pastel, data_filename: str, random_seed: int | None
+    pastel: PastelModel, data_filename: str, random_seed: int | None
 ) -> Tuple[List[EXAMPLES_TYPE], List[EXAMPLES_TYPE]]:
     """
     Prepare data for cross-validation by:
@@ -85,7 +85,7 @@ def prepare_crossvalidation_data(
 
 
 def evaluate_model(
-    model: Pastel, examples: List[EXAMPLES_TYPE], threshold: float = 3.0
+    model: PastelModel, examples: List[EXAMPLES_TYPE], threshold: float = 3.0
 ) -> Dict[str, float]:
     """
     Evaluate model performance on a set of examples using classification metrics.
@@ -130,7 +130,7 @@ def evaluate_model(
 
 
 def run_crossvalidation(
-    pastel: Pastel,
+    pastel: PastelModel,
     data_filename: str,
     n_trials: int = 5,
     random_seed: int | None = None,
@@ -173,7 +173,7 @@ def run_crossvalidation(
         train_sentences = [ex[0] for ex in train_examples]
 
         # Create a new model for training to avoid modifying the input model
-        train_model = Pastel(pastel.model)
+        train_model = PastelModel(pastel.model)
         cached_train_model = CachedPastel.from_pastel(train_model)
 
         # Get cached responses and learn weights
@@ -294,7 +294,7 @@ def evaluate_question_combinations(
             # Create a new model with this subset of questions
             q_model: dict[FEATURE_TYPE, float] = {q: 0.0 for q in question_subset}
             q_model[BiasType.BIAS] = 0.0
-            model = Pastel(q_model)
+            model = PastelModel(q_model)
 
             # Run cross-validation
             train_stats, test_stats = run_crossvalidation(
@@ -337,7 +337,7 @@ def evaluate_question_combinations(
                 )
                 _ = [print("   * ", q) for q in best_f1[1]]
                 # Need to add bias term to new model, as it's currently just a list of questions
-                pastel_to_save = Pastel.from_feature_list(list(best_f1[1]))
+                pastel_to_save = PastelModel.from_feature_list(list(best_f1[1]))
                 pastel_to_save.save_model(f"best_so_far{len(best_f1[1])}.json")
 
     # Print final timing summary

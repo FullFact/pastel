@@ -6,13 +6,13 @@ import logging
 from typing import List, Optional, Set, Tuple
 
 from pastel.models import FEATURE_TYPE, BiasType, Sentence
-from pastel.pastel import ARRAY_TYPE, Pastel, feature_as_string
+from pastel.pastel import ARRAY_TYPE, PastelModel, feature_as_string
 from training.db_manager import DatabaseManager
 
 _logger = logging.getLogger(__name__)
 
 
-class CachedPastel(Pastel):
+class CachedPastel(PastelModel):
     """
     A version of Pastel that caches responses in a database.
     Inherits from Pastel and overrides get_answers_to_questions to use caching.
@@ -24,7 +24,7 @@ class CachedPastel(Pastel):
         self.db = DatabaseManager()
 
     @classmethod
-    def from_pastel(cls, pastel: Pastel) -> "CachedPastel":
+    def from_pastel(cls, pastel: PastelModel) -> "CachedPastel":
         """Create a CachedPastel instance from an existing Pastel object."""
         cached_pastel = cls(pastel.model)
         return cached_pastel
@@ -123,7 +123,7 @@ class CachedPastel(Pastel):
             sub_model: dict[FEATURE_TYPE, float] = {BiasType.BIAS: self.get_bias()}
             for q in missing_questions:
                 sub_model[q] = self.model[q]
-            sub_pastel = Pastel(sub_model)
+            sub_pastel = PastelModel(sub_model)
             new_answers: dict[Sentence, dict[FEATURE_TYPE, float]] = (
                 await sub_pastel.get_answers_to_questions(list(missing_sentences))
             )

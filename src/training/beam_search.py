@@ -12,7 +12,7 @@ from sklearn.model_selection import train_test_split  # type: ignore
 
 from pastel.models import FEATURE_TYPE, BiasType
 from pastel.optimise_weights import lin_reg
-from pastel.pastel import EXAMPLES_TYPE, Pastel
+from pastel.pastel import EXAMPLES_TYPE, PastelModel
 from training.cached_pastel import CachedPastel
 from training.crossvalidate_pastel import (
     evaluate_model,
@@ -58,7 +58,7 @@ def add_one(
 
 def final_pass(
     good_pool: list[frozenset[str]], all_splits: list[SplitData]
-) -> tuple[Pastel | None, float]:
+) -> tuple[PastelModel | None, float]:
     """Take a shortlist of 'good' feature sets and do a final evaluation"""
     highest_score = -1.0
     best_model = None
@@ -72,7 +72,7 @@ def final_pass(
 
 def run_beam_search(
     all_features: list[str], beta: int = 3, max_iter: int | None = None
-) -> tuple[Pastel | None, float]:
+) -> tuple[PastelModel | None, float]:
     """Main feature selection algorithm. Systematically add more and
     more features, but only keep the best 'beta' models at each iteration.
     See https://en.wikipedia.org/wiki/Beam_search for background.
@@ -131,8 +131,8 @@ def run_beam_search(
 
 
 def train_model_from_examples(
-    train_model: Pastel, train_examples: list[EXAMPLES_TYPE]
-) -> Pastel:
+    train_model: PastelModel, train_examples: list[EXAMPLES_TYPE]
+) -> PastelModel:
     """Optimise weights of a model using the training set of sentences"""
     train_sentences = [ex[0] for ex in train_examples]
     # Get (maybe cached) responses to questions from genAI
@@ -160,7 +160,7 @@ def train_model_from_examples(
         feat: float(weight)
         for feat, weight in zip(train_model.model.keys(), new_weights)
     }
-    new_pastel = Pastel(new_model)
+    new_pastel = PastelModel(new_model)
     return new_pastel
 
 
@@ -168,7 +168,7 @@ def evaluate_pastel_set(
     question_subset: frozenset[str],
     all_splits: list[SplitData],
     threshold: float,
-) -> tuple[dict[str, float], Pastel]:
+) -> tuple[dict[str, float], PastelModel]:
     """Create a Pastel model from a set of features (which is a set of questions) and
     evaluate it.
     That model will predict answers & get scores for test set of sentences.
@@ -178,7 +178,7 @@ def evaluate_pastel_set(
     earlier stages of learning."""
     q_model: dict[FEATURE_TYPE, float] = {q: 0.0 for q in question_subset}
     q_model[BiasType.BIAS] = 0.0
-    train_model = Pastel(q_model)
+    train_model = PastelModel(q_model)
     cached_train_model = CachedPastel.from_pastel(train_model)
     all_metrics = []
 
