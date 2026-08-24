@@ -68,6 +68,20 @@ uv sync --extra local
 
 and it needs to be able to find the fine-tuned models — set `PASTEL_LOCAL_MODELS_DIR` unless you are running from the repo root with the models under `data/local_models/models`.
 
+### Billing labels
+
+`PastelGemini` takes an optional `labels` dict, which is attached to each Gemini call the model makes so its spend can be separated out in Google Cloud billing:
+
+```python
+pastel = PastelGemini.from_dict(weights, labels={"task": "checkworthy_pastel"})
+```
+
+These are merged with any `GENAI_LABEL_*` environment variables that `genai_utils` picks up at import time (e.g. `GENAI_LABEL_SERVICE=claims-analysis-api` gives every call a `service` label), so a per-task label here composes with the service-level one rather than replacing it.
+
+Keys must start with a lowercase letter; keys and values can only contain lowercase letters, numbers, `-` and `_`, and must be at most 63 characters. `genai_utils` drops any label that doesn't meet those rules (with a warning) rather than failing the call, so a typo means untagged spend rather than an error.
+
+`PastelLocal` makes no Gemini calls, so it takes no labels.
+
 ### A note on data
 
 An example data file, `data/example_training_data.jsonl` is provided so tests and demos can run.
