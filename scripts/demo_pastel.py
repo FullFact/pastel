@@ -7,9 +7,9 @@ The backend is chosen at runtime, so the same demo exercises both:
     python scripts/demo_pastel.py --backend local  # locally fine-tuned models
     PASTEL_BACKEND=local python scripts/demo_pastel.py
 
-The local backend can only answer the questions it has fine-tuned models for
-(local_models.questions.QUESTIONS), so the demo picks its question set to suit
-whichever backend is in use.
+The local backend can only answer questions whose encoder models have been
+fine-tuned, so the demo picks its question set to suit whichever backend is in
+use. Run `python -m pastel.local` to see which those are.
 """
 
 import argparse
@@ -18,7 +18,6 @@ import json
 import tempfile
 from typing import Type
 
-from local_models.questions import QUESTIONS
 from pastel import (
     BACKENDS,
     DEFAULT_BACKEND,
@@ -26,6 +25,7 @@ from pastel import (
     PastelModel,
     get_backend,
 )
+from pastel.local import require_available_questions
 from pastel.models import FEATURE_TYPE, BiasType, Sentence
 from pastel.optimise_weights import learn_weights
 
@@ -36,9 +36,10 @@ TRAINED_MODEL_OUT = "scripts/new_demo_pastel_model.json"
 
 
 def demo_questions(backend: Type[PastelModel]) -> list[str]:
-    """A question set the given backend can actually answer."""
+    """A question set the given backend can actually answer. For the local
+    backend that means only the questions whose models have been trained."""
     if issubclass(backend, PastelLocal):
-        return list(QUESTIONS)
+        return require_available_questions()
     return [
         "Is this sentence about olive oil?",
         "Is this about a disease or illness?",

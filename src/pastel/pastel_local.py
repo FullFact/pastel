@@ -1,7 +1,12 @@
 import asyncio
+from typing import Self, Sequence
 
-from local_models.local_answerer import answer_question, preload_models
-from local_models.questions import QUESTIONS
+from pastel.local.local_answerer import answer_question, preload_models
+from pastel.local.model_registry import (
+    missing_questions,
+    require_available_questions,
+)
+from pastel.local.questions import QUESTIONS
 from pastel.models import FEATURE_TYPE, Sentence
 from pastel.pastel import PastelModel
 
@@ -9,8 +14,13 @@ from pastel.pastel import PastelModel
 class PastelLocal(PastelModel):
     """Answers the model's questions with the locally fine-tuned encoder models.
 
-    There is one fine-tuned model per question in `local_models.questions.QUESTIONS`,
-    so this backend can only answer questions drawn from that list.
+    There is one fine-tuned model per question in `pastel.local.questions.QUESTIONS`,
+    so this backend can only answer questions drawn from that list. QUESTIONS is
+    a declaration, though - whether a question's model has actually been trained
+    is a separate matter, reported by
+    `pastel.local.model_registry.available_questions()`. Constructing a model
+    only checks the declaration, which is cheap; a declared-but-untrained
+    question raises FileNotFoundError when it is first answered.
     """
 
     def __init__(self, model: dict[FEATURE_TYPE, float]) -> None:
@@ -21,14 +31,31 @@ class PastelLocal(PastelModel):
             raise ValueError(
                 "PastelLocal has no fine-tuned model for the following question(s): "
                 + "; ".join(unsupported)
-                + ". Only questions listed in local_models.questions.QUESTIONS "
+                + ". Only questions listed in pastel.local.questions.QUESTIONS "
                 "can be answered locally."
             )
+
+    @classmethod
+    def from_available_questions(
+        cls, extra_features: Sequence[FEATURE_TYPE] = ()
+    ) -> Self:
+        """A new untrained model over every question that has a trained model
+        on disk, plus any extra features given. Use this in preference to
+        QUESTIONS when a partly-trained set of models is expected - during
+        development, or before every question has been fine-tuned."""
+        return cls.from_feature_list([*require_available_questions(), *extra_features])
+
+    @staticmethod
+    def untrained_questions() -> list[str]:
+        """Declared questions whose models have not been trained (or cannot be
+        found). Answering one of these raises FileNotFoundError."""
+        return missing_questions()
 
     def preload(self) -> None:
         """Load this model's fine-tuned models into memory now, rather than on
         the first call to get_answers_to_questions(). Worth doing before timing
-        anything, or before a long batch run."""
+        anything, or before a long batch run - and it surfaces a missing model
+        up front rather than part-way through a batch."""
         preload_models(self.get_questions())
 
     async def get_answers_to_questions(

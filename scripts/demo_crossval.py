@@ -12,8 +12,8 @@ from typing import Type
 import numpy as np
 
 import training.crossvalidate_pastel as cvp
-from local_models.questions import QUESTIONS
 from pastel import BACKENDS, DEFAULT_BACKEND, PastelLocal, PastelModel, get_backend
+from pastel.local import require_available_questions
 from training.db_manager import DatabaseManager
 
 TRAINING_DATA_PATH = "data/example_training_data.jsonl"
@@ -35,12 +35,12 @@ def report_score_ranges(data_filename: str) -> None:
 def get_questions(backend: Type[PastelModel]) -> list[str]:
     """The pool of questions to search over.
 
-    The local backend is limited to the questions it has fine-tuned models for.
-    Otherwise take every question in the cache database, i.e. every question
-    that has been tried out and not deleted.
+    The local backend is limited to the questions whose fine-tuned models have
+    actually been trained. Otherwise take every question in the cache database,
+    i.e. every question that has been tried out and not deleted.
     """
     if issubclass(backend, PastelLocal):
-        return list(QUESTIONS)
+        return require_available_questions()
     db = DatabaseManager()
     return db.get_unique_questions()
 

@@ -9,7 +9,7 @@ At Full Fact, this approach is used to help identify claims that are worth bring
 The `pastel/pastel.py` module defines `PastelModel`: the features-to-weights model itself, saving and loading it, and turning a set of answers into a single score. It is abstract - answering the questions is left to a backend, which is the only part that differs between them:
 
 * `pastel/pastel_gemini.py` — `PastelGemini` sends all of a model's questions to Gemini in one prompt per sentence.
-* `pastel/pastel_local.py` — `PastelLocal` answers each question with its own locally fine-tuned encoder model (see `local_models/README.md`).
+* `pastel/pastel_local.py` — `PastelLocal` answers each question with its own locally fine-tuned encoder model. `pastel/local/` holds the question list, the model registry and the loading code; training new models lives in `local_models/` (see its README) and is not part of the installable library.
 
 Both are drop-in replacements for each other, so pick one at runtime with `pastel.get_backend()` rather than by changing imports:
 
@@ -21,11 +21,33 @@ pastel = get_backend("local").load_model("my_model.json")   # or "gemini"
 
 With no argument, `get_backend()` reads the `PASTEL_BACKEND` environment variable and falls back to Gemini. Each demo script in `scripts/` takes the same choice as a `--backend` flag.
 
+`PastelGemini` also takes optional Vertex billing `labels`, attached to every Gemini call it makes so its spend can be separated out in Google Cloud billing. They are threaded through `from_dict`, `load_model` and `from_feature_list`, and survive the model copying that training does.
+
 The `pastel/optimise_weights.py` module calculates the parameters of the regression model, and requires a list of sentences with associated checkworthy scores.
 
 Currently, this is used by the genai-checkworthy repo but in the future, the same approach might be used to analyse text for other features such as propaganda, bias, reliability etc.
 
 `training/cached_pastel.py` wraps any backend and uses a local SQLite database to cache its responses. This saves a lot of time and effort when re-analysing the same sentences over and over again, so is useful for experimenting with/optimising Pastel models, but should not be used in production. (It won't help there anyway, as each sentence is only ever seen once.) Similarly, `training/crossvalidate_pastel.py` and `training/beam_search.py` are scripts to compare a large number of Pastel models (potentially millions!) to help find a good combination of questions. `beam_search` uses heuristics and is a lot faster. There is a sample database of cached answers in `data/sample_responses.db` that can be used to initialise the DatabaseManager.
+
+### Upgrading from 1.x
+
+Splitting the backends renamed the class that used to do everything, so `Pastel`
+no longer exists. `PastelModel` is the abstract base; pick the backend you want:
+
+| 1.x | 2.x |
+| --- | --- |
+| `from pastel.pastel import Pastel` | `from pastel import PastelGemini` (or `get_backend()`) |
+| `Pastel(model, labels)` | `PastelGemini(model, labels)` |
+| `Pastel.from_dict(d, labels)` | `PastelGemini.from_dict(d, labels)` |
+| `Pastel.load_model(path, labels)` | `PastelGemini.load_model(path, labels)` |
+| `Pastel.from_feature_list(features, labels)` | `PastelGemini.from_feature_list(features, labels)` |
+| `pastel.make_prompt(sentence)` | `PastelGemini._make_prompt(sentence)` — Gemini-specific, now internal |
+
+Everything else keeps its name and signature, `labels` included: `make_predictions`,
+`update_predictions`, `save_model`, `display_model`, `get_questions`,
+`get_functions`, `get_bias`, `quantify_answers`, `get_scores_from_answers`, and
+the `Sentence` / `ScoreAndAnswers` / `BiasType` models. So for Gemini users the
+migration is the import and the class name.
 
 ### Pastel Functions and Claim Types
 
@@ -37,6 +59,14 @@ If you don't want to manually specify the config of Gemini, you should set the f
 * `GEMINI_PROJECT`: the GCP project you want to use Gemini in, e.g. "my-production-project-1"
 * `GEMINI_LOCATION`: the GCP location you want to run Gemini on, e.g. "global"
 * `GEMINI_MODEL`: the Gemini model you wish to use, e.g. "gemini-2.5-flash-lite"
+
+Using the Gemini backend needs nothing beyond the base install. The local backend needs `transformers` and `torch`, which are an optional extra:
+
+```
+uv sync --extra local
+```
+
+and it needs to be able to find the fine-tuned models — set `PASTEL_LOCAL_MODELS_DIR` unless you are running from the repo root with the models under `data/local_models/models`.
 
 ### A note on data
 

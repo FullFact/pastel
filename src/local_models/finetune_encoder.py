@@ -25,9 +25,11 @@ import numpy as np
 from sklearn.model_selection import StratifiedShuffleSplit  # type: ignore
 from transformers import AutoTokenizer
 
-from local_models.model_registry import assign_model_id
+from pastel.local.model_registry import assign_model_id, models_dir
 
 logger = logging.getLogger(__name__)
+
+LABELLED_DATA_PATH = Path("data/local_models/labelled_sentences.jsonl")
 
 
 def setup_logging(output_dir: Path) -> None:
@@ -280,7 +282,7 @@ def auto_detect_device() -> str:
 
 def get_question_id(question: str) -> str:
     """The model id (directory name) to train this question's model into.
-    Shared with inference via local_models.model_registry, so that
+    Shared with inference via pastel.local.model_registry, so that
     local_answerer looks the model up under the same name."""
     return assign_model_id(question)
 
@@ -410,8 +412,9 @@ def append_result_csv(result: ModelResult, output_path: Path) -> None:
 
 def build_one_question_answerer(question: str) -> None:
 
-    input_path = Path("data/local_models/labelled_sentences.jsonl")
-    output_dir = Path("data/local_models/models")
+    input_path = LABELLED_DATA_PATH
+    # Train into the same directory inference reads from, wherever that is.
+    output_dir = models_dir()
     epochs = 3
     batch_size = 16
     lr = 2e-5

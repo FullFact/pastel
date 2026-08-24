@@ -7,7 +7,7 @@ import pytest
 from pytest import mark, param
 
 from pastel.models import FEATURE_TYPE, BiasType, ScoreAndAnswers, Sentence
-from pastel.pastel import PastelModel
+from pastel.pastel import PastelModel, feature_as_string
 
 # mypy: ignore-errors
 # getting "Untyped decorator makes function ... untyped " so ignoring for now:
@@ -62,6 +62,30 @@ def test_save_load_round_trip_with_functions() -> None:
         assert set(json.load(json_in)) == {Q1, "is_claim_type_quantity", "bias"}
 
     assert DummyPastel.load_model(path).model == model.model
+
+
+def test_from_dict_resolves_names_to_features() -> None:
+    """from_dict is used downstream (genai-checkworthy) to build a model from a
+    plain map of names to weights."""
+    from pastel import pastel_functions
+
+    model = DummyPastel.from_dict(
+        {"bias": 1.0, Q1: -3.0, "is_claim_type_quantity": 0.25}
+    )
+    assert model.model == {
+        BiasType.BIAS: 1.0,
+        Q1: -3.0,
+        pastel_functions.is_claim_type_quantity: 0.25,
+    }
+    assert model.get_bias() == 1.0
+
+
+def test_from_dict_round_trips_a_saved_model(pastel_instance: PastelModel) -> None:
+    saved = {
+        feature_as_string(feature): weight
+        for feature, weight in pastel_instance.model.items()
+    }
+    assert DummyPastel.from_dict(saved).model == pastel_instance.model
 
 
 def test_with_model(pastel_instance: PastelModel) -> None:

@@ -119,3 +119,40 @@ async def test_get_answers_to_questions(
     ):
         answers = await pastel_instance.get_answers_to_questions(sentences)
         assert answers == expected
+
+
+def test_labels_default_to_empty() -> None:
+    assert PastelGemini({BiasType.BIAS: 1.0, Q1: 1.0}).labels == {}
+
+
+@patch("pastel.pastel_gemini.run_prompt_async", new_callable=AsyncMock)
+async def test_billing_labels_are_sent_with_every_call(mock_run_prompt) -> None:
+    """Vertex billing labels let this model's Gemini spend be separated out in
+    Google Cloud billing, so every call has to carry them."""
+    mock_run_prompt.return_value = "0. yes"
+    labels = {"team": "afc", "job": "checkworthy"}
+    model = PastelGemini({BiasType.BIAS: 1.0, Q1: 1.0}, labels=labels)
+
+    await model.get_answers_to_questions([Sentence("A claim.", ("quantity",))])
+
+    assert mock_run_prompt.await_args.kwargs["labels"] == labels
+
+
+def test_labels_survive_loading_and_copying(tmp_path) -> None:
+    """Training copies models constantly (beam search, cross-validation), so a
+    copy that dropped the labels would silently stop billing correctly."""
+    import json
+
+    model_file = tmp_path / "model.json"
+    model_file.write_text(json.dumps({"bias": 1.0, Q1: 0.5}), encoding="utf-8")
+
+    labels = {"team": "afc"}
+    loaded = PastelGemini.load_model(str(model_file), labels=labels)
+    assert loaded.labels == labels
+
+    copied = loaded.create_copy_with_different_model({BiasType.BIAS: 2.0, Q2: 1.0})
+    assert isinstance(copied, PastelGemini)
+    assert copied.labels == labels
+
+    assert PastelGemini.from_dict({"bias": 1.0}, labels=labels).labels == labels
+    assert PastelGemini.from_feature_list([Q1], labels=labels).labels == labels

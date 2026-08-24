@@ -12,8 +12,8 @@ second run over the same (question, sentence) pairs makes no model calls.
 import argparse
 from typing import Type
 
-from local_models.questions import QUESTIONS
 from pastel import BACKENDS, DEFAULT_BACKEND, PastelLocal, PastelModel, get_backend
+from pastel.local import require_available_questions
 from pastel.models import FEATURE_TYPE
 from training.beam_search import run_beam_search
 from training.db_manager import DatabaseManager
@@ -46,12 +46,12 @@ def get_questions(
 ) -> list[str]:
     """The questions to select from.
 
-    The local backend is limited to the questions it has fine-tuned models for.
-    Otherwise, either load every question in the local cached-pastel database
-    or return a sample.
+    The local backend is limited to the questions whose fine-tuned models have
+    actually been trained. Otherwise, either load every question in the local
+    cached-pastel database or return a sample.
     """
     if issubclass(backend, PastelLocal):
-        return list(QUESTIONS)
+        return require_available_questions()
     if use_all_from_db:
         db = DatabaseManager()
         return db.get_unique_questions()

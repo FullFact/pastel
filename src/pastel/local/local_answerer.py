@@ -3,16 +3,24 @@
 import logging
 from typing import Any
 
-from local_models.model_registry import (
+from pastel.local.model_registry import (
     MODEL_CATEGORY,
     MODELS,
-    MODELS_DIR,
+    latest_checkpoint,
     model_id_for_question,
 )
-from local_models.questions import QUESTIONS
+from pastel.local.questions import QUESTIONS
 
 MAX_LENGTH = 128
 BATCH_SIZE = 32
+
+# Answering questions locally needs transformers and torch, which are an
+# optional extra so that Gemini-only users don't have to install them.
+MISSING_DEPENDENCIES_HINT = (
+    "Answering Pastel questions locally needs the optional inference "
+    "dependencies (transformers and torch). Install them with "
+    "`uv sync --extra local`, or `pip install 'pastel[local]'`."
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -21,24 +29,34 @@ _logger = logging.getLogger(__name__)
 _model_cache: dict[str, tuple[Any, Any]] = {}
 
 
-def _load_model(model_id: str) -> tuple[Any, Any]:
-    """Load the latest checkpoint of the fine-tuned model called `model_id`."""
-    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+def _import_transformers() -> Any:
+    try:
+        import transformers
+    except ImportError as exc:
+        raise ImportError(MISSING_DEPENDENCIES_HINT) from exc
+    return transformers
 
-    checkpoint_dir = MODELS_DIR / MODEL_CATEGORY / model_id
 
-    checkpoints = sorted(
-        checkpoint_dir.glob("checkpoint-*"),
-        key=lambda p: int(p.name.split("-")[1]),
-    )
-    if not checkpoints:
-        raise FileNotFoundError(f"No checkpoints found in {checkpoint_dir}")
-    latest = checkpoints[-1]
-    _logger.info("Loading model from %s", latest)
+def _import_torch() -> Any:
+    try:
+        import torch
+    except ImportError as exc:
+        raise ImportError(MISSING_DEPENDENCIES_HINT) from exc
+    return torch
+
+
+def _load_model(question: str) -> tuple[Any, Any]:
+    """Load the latest checkpoint of the model fine-tuned for `question`."""
+    transformers = _import_transformers()
+
+    checkpoint = latest_checkpoint(question)
+    _logger.info("Loading model from %s", checkpoint)
 
     base_model_id = MODELS[MODEL_CATEGORY]
-    tokenizer = AutoTokenizer.from_pretrained(base_model_id)
-    model = AutoModelForSequenceClassification.from_pretrained(str(latest))
+    tokenizer = transformers.AutoTokenizer.from_pretrained(base_model_id)
+    model = transformers.AutoModelForSequenceClassification.from_pretrained(
+        str(checkpoint)
+    )
     model.eval()
     return model, tokenizer
 
@@ -47,7 +65,7 @@ def _cached_model(question: str) -> tuple[Any, Any]:
     """The (model, tokenizer) pair that answers `question`, loading it once."""
     model_id = model_id_for_question(question)
     if model_id not in _model_cache:
-        _model_cache[model_id] = _load_model(model_id)
+        _model_cache[model_id] = _load_model(question)
     return _model_cache[model_id]
 
 
@@ -63,7 +81,7 @@ def answer_question(question: str, sentences: list[str]) -> list[float]:
     Answers the question for the given list of sentences.
     Returns one score per sentence, in the same order as the input.
     """
-    import torch
+    torch = _import_torch()
 
     model, tokenizer = _cached_model(question)
 

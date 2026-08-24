@@ -12,7 +12,6 @@ import argparse
 import asyncio
 from typing import Type
 
-from local_models.questions import QUESTIONS
 from pastel import BACKENDS, DEFAULT_BACKEND, PastelLocal, PastelModel, get_backend
 from pastel.models import Sentence
 from training.cached_pastel import CachedPastel
@@ -34,7 +33,7 @@ def build_model(backend: Type[PastelModel]) -> PastelModel:
     """A model the given backend can answer. Weights are arbitrary for the
     local backend - this demo is about the caching, not the scores."""
     if issubclass(backend, PastelLocal):
-        model = backend.from_feature_list(list(QUESTIONS))
+        model = backend.from_available_questions()
         model.model = {feature: 0.5 for feature in model.model}
         return model
     return backend.load_model(GEMINI_EXAMPLE_MODEL)

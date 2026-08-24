@@ -33,6 +33,31 @@ def log_retry_attempt(retry_state: tenacity.RetryCallState) -> None:
 
 
 class PastelGemini(PastelModel):
+    """Answers the model's questions by sending them all to Gemini in a single
+    prompt per sentence."""
+
+    def __init__(
+        self,
+        model: dict[FEATURE_TYPE, float],
+        labels: dict[str, str] | None = None,
+    ) -> None:
+        """As PastelModel, plus optional Vertex billing labels.
+
+        The labels are attached to every Gemini call this model makes, so its
+        spend can be separated out in Google Cloud billing. They are merged
+        with (and take precedence over) any GENAI_LABEL_* environment variables
+        picked up by genai_utils.
+        """
+        super().__init__(model)
+        self.labels = labels or {}
+
+    def create_copy_with_different_model(
+        self, model: dict[FEATURE_TYPE, float]
+    ) -> "PastelGemini":
+        """A new model with different features and weights, still billed
+        against the same labels."""
+        return type(self)(model, labels=self.labels)
+
     async def get_answers_to_questions(
         self, sentences: list[Sentence]
     ) -> dict[Sentence, dict[FEATURE_TYPE, float]]:
@@ -100,7 +125,7 @@ class PastelGemini(PastelModel):
         sent_answers: dict[FEATURE_TYPE, float] = {}
         prompt = self._make_prompt(sentence)
 
-        raw_output = await run_prompt_async(prompt)
+        raw_output = await run_prompt_async(prompt, labels=self.labels)
         raw_output = raw_output.strip().lower()
 
         if "question" in raw_output:

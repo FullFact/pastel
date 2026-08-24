@@ -5,7 +5,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import Self, Sequence, Tuple, TypeAlias
+from typing import Any, Self, Sequence, Tuple, TypeAlias
 
 import numpy as np
 import numpy.typing as npt
@@ -63,38 +63,48 @@ class PastelModel(ABC):
         for feature, weight in self.model.items():
             print(f"  {feature_as_string(feature):20}: {weight:.4f}")
 
-    @classmethod
-    def from_feature_list(cls, feature_names: Sequence[FEATURE_TYPE]) -> Self:
-        """Take a list of features without weights. Initialise new
-        model with all weights set to zero, ready for training"""
-        new_model = dict()
-        for feature in feature_names:
-            # need to check which are pastel_functions and convert to Callables
-            if feature in pastel_functions.__all__:
-                new_model[getattr(pastel_functions, str(feature))] = 0.0
-            else:
-                new_model[feature] = 0.0
-        new_model[BiasType.BIAS] = 0.0
-        return cls(new_model)
+    @staticmethod
+    def _feature_from_name(name: FEATURE_TYPE) -> FEATURE_TYPE:
+        """The feature a saved name refers to: a function in pastel_functions,
+        the bias term, or a question, which is its own name.
+        This is the inverse of feature_as_string()."""
+        if name in pastel_functions.__all__:
+            return getattr(pastel_functions, str(name))
+        if name == BIAS_KEY:
+            return BiasType.BIAS
+        return name
 
     @classmethod
-    def load_model(cls, model_file: str) -> Self:
+    def from_feature_list(
+        cls, feature_names: Sequence[FEATURE_TYPE], *args: Any, **kwargs: Any
+    ) -> Self:
+        """Take a list of features without weights. Initialise new
+        model with all weights set to zero, ready for training.
+        Any extra arguments are passed on to the backend's constructor."""
+        new_model = {cls._feature_from_name(feature): 0.0 for feature in feature_names}
+        new_model[BiasType.BIAS] = 0.0
+        return cls(new_model, *args, **kwargs)
+
+    @classmethod
+    def from_dict(cls, model_dict: dict[str, float], *args: Any, **kwargs: Any) -> Self:
+        """Create a model from a map of feature names to weights, converting
+        any function names into the functions themselves.
+        Any extra arguments are passed on to the backend's constructor."""
+        new_model = {
+            cls._feature_from_name(feature): weight
+            for feature, weight in model_dict.items()
+        }
+        return cls(new_model, *args, **kwargs)
+
+    @classmethod
+    def load_model(cls, model_file: str, *args: Any, **kwargs: Any) -> Self:
         """Load model from JSON file. Convert any functions in the model
-        from their names to Callable functions."""
+        from their names to Callable functions.
+        Any extra arguments are passed on to the backend's constructor."""
 
         with open(model_file, "rt", encoding="utf-8") as json_in:
             model_json = json.load(json_in)
-        # replace function names with function objects found in pastel_functions module
-        new_model = {}
-        for feature, weight in model_json.items():
-            if feature in pastel_functions.__all__:
-                new_model[getattr(pastel_functions, feature)] = weight
-            elif feature == BIAS_KEY:
-                new_model[BiasType.BIAS] = weight
-            else:
-                new_model[feature] = weight
-
-        return cls(new_model)
+        return cls.from_dict(model_json, *args, **kwargs)
 
     def save_model(self, model_path: str) -> None:
         """

@@ -2,7 +2,6 @@
 
 import pytest
 
-from local_models.questions import QUESTIONS
 from pastel import (
     BACKEND_ENV_VAR,
     DEFAULT_BACKEND,
@@ -10,6 +9,7 @@ from pastel import (
     PastelLocal,
     get_backend,
 )
+from pastel.local.questions import QUESTIONS
 from pastel.models import BiasType
 
 # mypy: ignore-errors
@@ -102,3 +102,39 @@ async def test_local_answers_questions_and_functions(monkeypatch) -> None:
 async def test_local_with_no_sentences() -> None:
     model = PastelLocal.from_feature_list([QUESTIONS[0]])
     assert await model.get_answers_to_questions([]) == {}
+
+
+def test_cached_model_preserves_billing_labels() -> None:
+    """The cache wraps a backend, so it must not lose the wrapped model's
+    labels when it copies it during training."""
+    from training.cached_pastel import CachedPastel
+    from training.db_manager import DatabaseManager
+
+    labels = {"team": "afc"}
+    inner = PastelGemini({BiasType.BIAS: 1.0, "Any question?": 1.0}, labels=labels)
+    cached = CachedPastel.from_pastel(inner, DatabaseManager(":memory:"))
+
+    copied = cached.create_copy_with_different_model(
+        {BiasType.BIAS: 1.0, "Another question?": 1.0}
+    )
+    assert isinstance(copied, CachedPastel)
+    assert copied.inner.labels == labels
+
+
+def test_local_dependency_error_is_actionable(monkeypatch) -> None:
+    """Without the optional extra installed, the failure should say how to fix
+    it rather than surfacing a bare ModuleNotFoundError from deep inside."""
+    import builtins
+
+    from pastel.local import local_answerer
+
+    real_import = builtins.__import__
+
+    def no_torch(name, *args, **kwargs):
+        if name == "torch":
+            raise ImportError("No module named 'torch'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_torch)
+    with pytest.raises(ImportError, match="uv sync --extra local"):
+        local_answerer.answer_question(QUESTIONS[0], ["A sentence."])
