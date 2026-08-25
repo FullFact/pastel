@@ -1,13 +1,13 @@
 import json
 import tempfile
-from unittest.mock import AsyncMock, call, patch
+from unittest.mock import call, patch
 
 import numpy as np
 import pytest
 from pytest import mark, param
 
 from pastel.models import FEATURE_TYPE, BiasType, ScoreAndAnswers, Sentence
-from pastel.pastel import Pastel
+from pastel.pastel import PastelModel, feature_as_string
 
 # mypy: ignore-errors
 # getting "Untyped decorator makes function ... untyped " so ignoring for now:
@@ -16,13 +16,23 @@ Q1: FEATURE_TYPE = "Is the statement factual?"
 Q2: FEATURE_TYPE = "Does the statement contain bias?"
 
 
+class DummyPastel(PastelModel):
+    """PastelModel is abstract, so the shared behaviour is tested through a
+    backend that answers nothing. Tests that need answers patch them in."""
+
+    async def get_answers_to_questions(
+        self, sentences: list[Sentence]
+    ) -> dict[Sentence, dict[FEATURE_TYPE, float]]:
+        return {}
+
+
 @pytest.fixture
-def pastel_instance() -> Pastel:
-    pasteliser = Pastel({BiasType.BIAS: 1.0, Q1: -3.0, Q2: 2.0})
+def pastel_instance() -> PastelModel:
+    pasteliser = DummyPastel({BiasType.BIAS: 1.0, Q1: -3.0, Q2: 2.0})
     return pasteliser
 
 
-def test_load_file(pastel_instance: Pastel) -> None:
+def test_load_file(pastel_instance: PastelModel) -> None:
     with tempfile.NamedTemporaryFile(
         mode="w", delete=False, suffix=".json"
     ) as temp_file:
@@ -32,78 +42,64 @@ def test_load_file(pastel_instance: Pastel) -> None:
             Q2: 2.0,
         }
         json.dump(model, temp_file)
-    loaded: Pastel = Pastel.load_model(temp_file.name)
+    loaded: PastelModel = DummyPastel.load_model(temp_file.name)
     assert loaded.model == pastel_instance.model
 
 
-def test_model_from_dict():
-    model_dict = {"bias": 1.0, "question_0?": 2.0, "is_claim_type_personal": 3.0}
-    model = Pastel.from_dict(model_dict)
-    assert model.get_bias() == 1.0
-    assert len(model.get_functions()) == 1
-    assert len(model.get_questions()) == 1
+def test_save_load_round_trip_with_functions() -> None:
+    """Functions and the bias term are saved by name and come back as the same
+    features, so a saved model is the model that was trained."""
+    model = DummyPastel.from_feature_list([Q1, "is_claim_type_quantity"])
+    model.model = {feature: 1.5 for feature in model.model}
 
-
-def test_labels_default_to_empty(pastel_instance: Pastel) -> None:
-    assert pastel_instance.labels == {}
-
-
-@mark.parametrize(
-    "make_model",
-    [
-        param(
-            lambda labels: Pastel({BiasType.BIAS: 1.0, Q1: -3.0}, labels),
-            id="constructor",
-        ),
-        param(
-            lambda labels: Pastel.from_dict({"bias": 1.0, Q1: -3.0}, labels),
-            id="from_dict",
-        ),
-        param(
-            lambda labels: Pastel.from_feature_list([Q1], labels),
-            id="from_feature_list",
-        ),
-    ],
-)
-def test_labels_are_stored(make_model) -> None:
-    labels = {"task": "checkworthy_pastel"}
-    assert make_model(labels).labels == labels
-
-
-def test_labels_from_load_model() -> None:
-    labels = {"task": "checkworthy_pastel"}
     with tempfile.NamedTemporaryFile(
         mode="w", delete=False, suffix=".json"
     ) as temp_file:
-        json.dump({"bias": 1.0, Q1: -3.0}, temp_file)
-    assert Pastel.load_model(temp_file.name, labels).labels == labels
+        path = temp_file.name
+    model.save_model(path)
+
+    with open(path, "rt", encoding="utf-8") as json_in:
+        assert set(json.load(json_in)) == {Q1, "is_claim_type_quantity", "bias"}
+
+    assert DummyPastel.load_model(path).model == model.model
 
 
-@patch("pastel.pastel.run_prompt_async", new_callable=AsyncMock)
-async def test_labels_passed_to_gemini(mock_run_prompt: AsyncMock) -> None:
-    mock_run_prompt.return_value = "0. yes\n1. no"
-    labels = {"task": "checkworthy_pastel"}
-    pasteliser = Pastel({BiasType.BIAS: 1.0, Q1: -3.0, Q2: 2.0}, labels)
+def test_from_dict_resolves_names_to_features() -> None:
+    """from_dict is used downstream (genai-checkworthy) to build a model from a
+    plain map of names to weights."""
+    from pastel import pastel_functions
 
-    await pasteliser._get_llm_answers_for_single_sentence(
-        Sentence("This is a claim.", tuple("quantity"))
+    model = DummyPastel.from_dict(
+        {"bias": 1.0, Q1: -3.0, "is_claim_type_quantity": 0.25}
     )
-
-    assert mock_run_prompt.call_args.kwargs["labels"] == labels
-
-
-def test_make_prompt(pastel_instance: Pastel) -> None:
-    sentence = Sentence("The sky is blue.", tuple("quantity"))
-    prompt = pastel_instance.make_prompt(sentence)
-    assert "[QUESTIONS]" not in prompt
-    assert "[SENT1]" not in prompt
-    assert "The sky is blue." in prompt
-    assert "Is the statement factual?" in prompt
-    assert "Does the statement contain bias?" in prompt
-    assert "Is this a load of old nonsense" not in prompt
+    assert model.model == {
+        BiasType.BIAS: 1.0,
+        Q1: -3.0,
+        pastel_functions.is_claim_type_quantity: 0.25,
+    }
+    assert model.get_bias() == 1.0
 
 
-def test_get_scores_from_answers(pastel_instance: Pastel) -> None:
+def test_from_dict_round_trips_a_saved_model(pastel_instance: PastelModel) -> None:
+    saved = {
+        feature_as_string(feature): weight
+        for feature, weight in pastel_instance.model.items()
+    }
+    assert DummyPastel.from_dict(saved).model == pastel_instance.model
+
+
+def test_with_model(pastel_instance: PastelModel) -> None:
+    """A new model of the same kind, with different features and weights."""
+    updated = pastel_instance.create_copy_with_different_model(
+        {BiasType.BIAS: 0.5, Q1: 1.0}
+    )
+    assert isinstance(updated, DummyPastel)
+    assert updated.model == {BiasType.BIAS: 0.5, Q1: 1.0}
+    # the original is untouched
+    assert pastel_instance.get_questions() == [Q1, Q2]
+
+
+def test_get_scores_from_answers(pastel_instance: PastelModel) -> None:
     answers = [{Q1: 1.0, Q2: 1.0}, {Q1: 0.0, Q2: 1.0}]
     scores = pastel_instance.get_scores_from_answers(answers)
     expected_scores = np.array([0.0, 3.0])
@@ -112,7 +108,7 @@ def test_get_scores_from_answers(pastel_instance: Pastel) -> None:
     assert np.allclose(scores, expected_scores)
 
 
-def test_get_scores_from_answers_no_weights(pastel_instance: Pastel) -> None:
+def test_get_scores_from_answers_no_weights(pastel_instance: PastelModel) -> None:
     for k in pastel_instance.model.keys():
         pastel_instance.model[k] = 0.0
     answers = [{Q1: 1.0, Q2: 1.0}, {Q1: 0.0, Q2: 1.0}]
@@ -120,7 +116,7 @@ def test_get_scores_from_answers_no_weights(pastel_instance: Pastel) -> None:
         pastel_instance.get_scores_from_answers(answers)
 
 
-def test_quantify_answers(pastel_instance: Pastel) -> None:
+def test_quantify_answers(pastel_instance: PastelModel) -> None:
     answers = [{Q1: 1.0, Q2: 0.0}, {Q1: 1.0, Q2: 1.0}]
     numeric_answers = pastel_instance.quantify_answers(answers)
     print(numeric_answers)
@@ -131,60 +127,6 @@ def test_quantify_answers(pastel_instance: Pastel) -> None:
     assert all(x == 1 for x in numeric_answers[:, 0])
     # Given no sentences, return no answers
     assert pastel_instance.quantify_answers([]).shape[0] == 0
-
-
-@patch(
-    "pastel.pastel.run_prompt_async",
-    side_effect=ValueError("Gemini failed"),
-)
-async def test_retries(mock_run_prompt: AsyncMock, pastel_instance: Pastel) -> None:
-    sentence = Sentence("This is a claim.", tuple("quantity"))
-    try:
-        await pastel_instance._get_answers_for_single_sentence(sentence)
-        assert False
-    except Exception:
-        assert True
-
-    assert mock_run_prompt.call_count == 3
-
-
-@mark.parametrize(
-    "sentences,return_values,expected",
-    [
-        param(
-            [Sentence("s1", tuple("quantity")), Sentence("s2", tuple("quantity"))],
-            [{Q1: 1.0, Q2: 1.0}, {Q1: 1.0, Q2: 0.0}],
-            {
-                Sentence("s1", tuple("quantity")): {Q1: 1.0, Q2: 1.0},
-                Sentence("s2", tuple("quantity")): {Q1: 1.0, Q2: 0.0},
-            },
-            id="Normal case",
-        ),
-        param(
-            [Sentence("s1", tuple("quantity")), Sentence("s2", tuple("quantity"))],
-            [{Q1: 1.0, Q2: 1.0}, ValueError()],
-            {Sentence("s1", tuple("quantity")): {Q1: 1.0, Q2: 1.0}},
-            id="One sentence fails",
-        ),
-        param(
-            [Sentence("s1", tuple("quantity")), Sentence("s2", tuple("quantity"))],
-            [ValueError(), ValueError()],
-            {},
-            id="All sentences fail",
-        ),
-    ],
-)
-async def test_get_answers_to_questions(
-    sentences: list[Sentence],
-    return_values: list[dict[str, float] | BaseException],
-    expected: dict[Sentence, dict[str, float]],
-    pastel_instance: Pastel,
-):
-    with patch.object(
-        pastel_instance, "_get_answers_for_single_sentence", side_effect=return_values
-    ):
-        answers = await pastel_instance.get_answers_to_questions(sentences)
-        assert answers == expected
 
 
 @mark.parametrize(
@@ -244,7 +186,7 @@ async def test_make_predictions(
     sentences: list[Sentence],
     answers: dict[str, dict[str, float]],
     expected: dict[Sentence, ScoreAndAnswers],
-    pastel_instance: Pastel,
+    pastel_instance: PastelModel,
 ):
     with patch.object(
         pastel_instance, "get_answers_to_questions", return_value=answers

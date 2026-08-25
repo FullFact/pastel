@@ -1,17 +1,14 @@
 # First attempt at asking a series of yes/no questions for checkworthiness etc., inspired by Sheffield's PASTEL model
 # See paper: https://arxiv.org/abs/2309.07601v3 "Weakly Supervised Veracity Classification with LLM-Predicted Credibility Signals"
 
-import asyncio
 import json
 import logging
+from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import Sequence, Tuple, TypeAlias
+from typing import Any, Self, Sequence, Tuple, TypeAlias
 
 import numpy as np
 import numpy.typing as npt
-import tenacity
-from genai_utils.gemini import run_prompt_async
-from google.api_core import exceptions as core_exceptions
 
 from pastel import pastel_functions
 from pastel.models import FEATURE_TYPE, BiasType, ScoreAndAnswers, Sentence
@@ -21,120 +18,93 @@ _logger = logging.getLogger(__name__)
 EXAMPLES_TYPE = Tuple[Sentence, float]
 ARRAY_TYPE: TypeAlias = npt.NDArray[np.float64]
 
-RETRYABLE_EXCEPTIONS = (
-    core_exceptions.ResourceExhausted,
-    core_exceptions.InternalServerError,
-    core_exceptions.ServiceUnavailable,
-    core_exceptions.DeadlineExceeded,
-    ValueError,
-)
+# The key the bias term is stored under in a saved model file.
+BIAS_KEY = "bias"
 
 
 def feature_as_string(feature: FEATURE_TYPE) -> str:
+    """The name a feature is saved and displayed under: the bias term is
+    "bias", a function is its own name and a question is itself.
+    load_model() reverses this."""
+    if isinstance(feature, BiasType):
+        return BIAS_KEY
     if callable(feature):
         return feature.__name__
     return str(feature)
 
 
-def log_retry_attempt(retry_state: tenacity.RetryCallState) -> None:
-    """Log the retry attempt number and the exception that occurred."""
-    if (not retry_state.outcome) or (not retry_state.next_action):
-        return
-
-    _logger.info(
-        f"Retrying request due to {retry_state.outcome.exception()}..."
-        f"Attempt #{retry_state.attempt_number}, "
-        f"waiting {retry_state.next_action.sleep:.2f} seconds."
-    )
-
-
-class Pastel:
-    """Uses list of yes/no questions and functions to analyse a piece of text.
+class PastelModel(ABC):
+    """
+    Uses list of yes/no questions and functions to analyse a piece of text.
     Each of these features has an associated weight which is used to generate
     the final score for the text.
     The main model is a dict mapping features to weights.
+
+    Subclasses of this abstract class must implement
+    their own version of `get_answers_to_questions`.
     """
 
-    def __init__(
-        self,
-        model: dict[FEATURE_TYPE, float],
-        labels: dict[str, str] | None = None,
-    ) -> None:
+    def __init__(self, model: dict[FEATURE_TYPE, float]) -> None:
         """
         Create a new Pastel object from a list of questions and functions.
         A Pastel model is dict of features to weights. Exactly one
         entry should be BiasType.BIAS; zero or more may be features
         that are questions (ie strings) and zero or more may be
         are callable functions defined in the pastel_functions module.
-        The optional labels are attached to every Gemini call this model makes,
-        so its spend can be separated out in Google Cloud billing. They are
-        merged with (and take precedence over) any GENAI_LABEL_* environment
-        variables picked up by genai_utils.
         """
         self.model = model
-        self.labels = labels or {}
 
         # assert bias term exists
         assert isinstance(self.get_bias(), float)
 
     def display_model(self) -> None:
         """Print the model's features and weights in a readable format."""
-        print("Pastel Model:")
+        print(f"{type(self).__name__} model:")
         for feature, weight in self.model.items():
-            if isinstance(feature, BiasType):
-                name = "Bias"
-            elif callable(feature):
-                name = feature.__name__
-            else:
-                name = str(feature)
-            print(f"  {name:20}: {weight:.4f}")
+            print(f"  {feature_as_string(feature):20}: {weight:.4f}")
 
     @staticmethod
+    def _feature_from_name(name: FEATURE_TYPE) -> FEATURE_TYPE:
+        """The feature a saved name refers to: a function in pastel_functions,
+        the bias term, or a question, which is its own name.
+        This is the inverse of feature_as_string()."""
+        if name in pastel_functions.__all__:
+            return getattr(pastel_functions, str(name))
+        if name == BIAS_KEY:
+            return BiasType.BIAS
+        return name
+
+    @classmethod
     def from_feature_list(
-        feature_names: Sequence[FEATURE_TYPE],
-        labels: dict[str, str] | None = None,
-    ) -> "Pastel":
+        cls, feature_names: Sequence[FEATURE_TYPE], *args: Any, **kwargs: Any
+    ) -> Self:
         """Take a list of features without weights. Initialise new
-        model with all weights set to zero, ready for training"""
-        new_model = dict()
-        for feature in feature_names:
-            # need to check which are pastel_functions and convert to Callables
-            if feature in pastel_functions.__all__:
-                new_model[getattr(pastel_functions, str(feature))] = 0.0
-            else:
-                new_model[feature] = 0.0
+        model with all weights set to zero, ready for training.
+        Any extra arguments are passed on to the backend's constructor."""
+        new_model = {cls._feature_from_name(feature): 0.0 for feature in feature_names}
         new_model[BiasType.BIAS] = 0.0
-        return Pastel(new_model, labels)
+        return cls(new_model, *args, **kwargs)
 
-    @staticmethod
-    def from_dict(
-        model_dict: dict[str, float],
-        labels: dict[str, str] | None = None,
-    ) -> "Pastel":
-        "Create model from a map of features to weights"
-        # replace function names with function objects found in pastel_functions module
-        new_model = {}
-        for feature, weight in model_dict.items():
-            if feature in pastel_functions.__all__:
-                new_model[getattr(pastel_functions, feature)] = weight
-            elif feature == "bias":
-                new_model[BiasType.BIAS] = weight
-            else:
-                new_model[feature] = weight
+    @classmethod
+    def from_dict(cls, model_dict: dict[str, float], *args: Any, **kwargs: Any) -> Self:
+        """Create a model from a map of feature names to weights, converting
+        any function names into the functions themselves.
+        Any extra arguments are passed on to the backend's constructor."""
+        new_model = {
+            cls._feature_from_name(feature): weight
+            for feature, weight in model_dict.items()
+        }
+        return cls(new_model, *args, **kwargs)
 
-        return Pastel(new_model, labels)
-
-    @staticmethod
-    def load_model(
-        model_file: str,
-        labels: dict[str, str] | None = None,
-    ) -> "Pastel":
+    @classmethod
+    def load_model(cls, model_file: str, *args: Any, **kwargs: Any) -> Self:
         """Load model from JSON file. Convert any functions in the model
-        from their names to Callable functions."""
+        from their names to Callable functions.
+        Any extra arguments are passed on to the backend's constructor."""
 
         with open(model_file, "rt", encoding="utf-8") as json_in:
             model_json = json.load(json_in)
-        return Pastel.from_dict(model_json, labels)
+        return cls.from_dict(model_json, *args, **kwargs)
 
     def save_model(self, model_path: str) -> None:
         """
@@ -144,16 +114,19 @@ class Pastel:
 
         # Store the name of each function; all functions are in pastel_functions
         # so we know where to find them after re-loading a model.
-        model_json = dict()
-        for feature, weight in self.model.items():
-            if isinstance(feature, BiasType):
-                model_json["bias"] = float(weight)
-            if isinstance(feature, str):
-                model_json[feature] = float(weight)
-            if callable(feature):
-                model_json[feature.__name__] = float(weight)
+        model_json = {
+            feature_as_string(feature): float(weight)
+            for feature, weight in self.model.items()
+        }
         with open(model_path, "wt", encoding="utf-8") as json_out:
             json.dump(model_json, json_out, indent=2)
+
+    def create_copy_with_different_model(
+        self, model: dict[FEATURE_TYPE, float]
+    ) -> "PastelModel":
+        """Return a new model of the same kind - same backend, same caching -
+        but with a different set of features and weights."""
+        return type(self)(model)
 
     def get_bias(self) -> float:
         """Return just the bias weight"""
@@ -180,110 +153,26 @@ class Pastel:
 
         return functions
 
-    def make_prompt(self, sentence: Sentence) -> str:
-        """Makes a prompt for a single given sentence."""
-
-        questions = self.get_questions()
-
-        prompt = """
-Your task is to answer a series of questions about a sentence. Ensure your answers are truthful and reliable.
-You are expected to answer with ‘Yes’ or ‘No’ but you are also allowed to answer with ‘Unsure’ if you do not
-have enough information or context to provide a reliable answer.
-Your response should be limited to the question number and yes/no/unsure.
-Example output:
-0. Yes
-1. Yes
-2. No
-
-Here are the questions:
-[QUESTIONS]
-
-Here is the sentence: ```[SENT1]```
-
-"""
-        # extract the PastelFeatures whose type is string
-        prompt = prompt.replace(
-            "[QUESTIONS]",
-            "\n".join([f"Question {idx} {q}" for idx, q in enumerate(questions)]),
-        )
-        prompt = prompt.replace("[SENT1]", sentence.sentence_text)
-
-        return prompt
-
-    @staticmethod
-    def _label_mapping(label: str) -> float:
-        """Map yes/no/other response to 1/0/0.5 respectively.
-        If model responds 'unsure', 'don't know', 'uncertain' etc. then return 0.5.
+    @abstractmethod
+    async def get_answers_to_questions(
+        self, sentences: list[Sentence]
+    ) -> dict[Sentence, dict[FEATURE_TYPE, float]]:
         """
-        label_map = {"y": 1.0, "n": 0.0}
-        return label_map.get(label[0].lower(), 0.5)
+        Get answers for a given list of sentences.
+        For each sentence, this Returns a dictionary mapping features to scores.
 
-    @tenacity.retry(
-        wait=tenacity.wait_random_exponential(multiplier=1, max=60),
-        stop=tenacity.stop_after_attempt(3),
-        retry=tenacity.retry_if_exception_type(RETRYABLE_EXCEPTIONS),
-        before=log_retry_attempt,
-    )
-    async def _get_llm_answers_for_single_sentence(
-        self, sentence: Sentence
-    ) -> dict[FEATURE_TYPE, float]:
-        """Runs all genAI questions on the given sentence."""
-        sent_answers: dict[FEATURE_TYPE, float] = {}
-        prompt = self.make_prompt(sentence)
-        raw_output = await run_prompt_async(prompt, labels=self.labels)
-        raw_output = raw_output.strip().lower()
-        if "question" in raw_output:
-            output = raw_output[raw_output.index("0") :]
-        else:
-            output = raw_output
-        answers = output.split("\n")  # e.g. ["1. yes", "2. no"]
-
-        if len(answers) == len(self.get_questions()):
-            for q, a in zip(self.get_questions(), answers):
-                sent_answers[q] = self._label_mapping(a.split()[1])
-
-        else:
-            raise ValueError(
-                f"Failed to parse output for the sentence: {sentence.sentence_text}. Output received: {output}"
-            )
-        return sent_answers
+        Implementations may return fewer entries than they were given: a sentence
+        the backend could not answer for should be omitted rather than given
+        made-up answers. make_predictions() scores any omitted sentence as 0.0.
+        """
+        raise NotImplementedError
 
     def _get_function_answers_for_single_sentence(
         self, sentence: Sentence
     ) -> dict[FEATURE_TYPE, float]:
-        """Runs all the functions in the model on the given sentence."""
-        sent_answers: dict[FEATURE_TYPE, float] = {}
-        for f in self.get_functions():
-            sent_answers[f] = f(sentence)
-        return sent_answers
-
-    async def _get_answers_for_single_sentence(
-        self, sentence: Sentence
-    ) -> dict[FEATURE_TYPE, float]:
-        # First, get answers to all the questions from genAI:
-        llm_sent_answers = await self._get_llm_answers_for_single_sentence(sentence)
-
-        # Second, get values from the functions
-        function_sent_answers = self._get_function_answers_for_single_sentence(sentence)
-
-        return llm_sent_answers | function_sent_answers
-
-    async def get_answers_to_questions(
-        self, sentences: list[Sentence]
-    ) -> dict[Sentence, dict[FEATURE_TYPE, float]]:
-        """Embed each example into the prompt and pass to genAI, then
-        get answers for non-genAI functions.
-        For each sentence, this returns a dictionary mapping features to scores."""
-
-        jobs = [
-            self._get_answers_for_single_sentence(sentence) for sentence in sentences
-        ]
-        answers = await asyncio.gather(*jobs, return_exceptions=True)
-
-        # return the answers which didn't cause an exception
-        return {
-            s: a for s, a in zip(sentences, answers) if not isinstance(a, BaseException)
-        }
+        """Runs all the functions in the model on the given sentence.
+        These are computed locally, so this is shared by every backend."""
+        return {f: f(sentence) for f in self.get_functions()}
 
     def quantify_answers(
         self, answers: Sequence[dict[FEATURE_TYPE, float]]
