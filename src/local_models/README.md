@@ -4,7 +4,9 @@ Originally, the Pastel library relied on Gemini to answer a set of questions aro
 
 When a new question is added, we need to create a training set and then use it to fine tune a new model. Each model will only answer one question. We use Gemini to create the training set as a one-off task.
 
-This package is the *training* half of that, and is not part of the installable library. Everything needed to *use* the resulting models lives in `pastel/local/`: the question list, the registry saying which model answers which question, and loading them for inference.
+This package is the *training* half of that, and is not part of the installable library. Everything needed to *use* the resulting models lives in `pastel/local/`: the registry saying which model answers which question, and loading them for inference.
+
+The library declares no questions of its own. Which questions to ask, and the weights to combine their answers with, belong to the downstream task: pick them, train the weights, and save the result as a Pastel model JSON file.
 
 ## Choosing a backend
 
@@ -19,7 +21,7 @@ pastel = backend.load_model("my_model.json")
 
 `get_backend(None)` reads the `PASTEL_BACKEND` environment variable and falls back to `gemini`. Every demo script takes a matching `--backend` flag.
 
-`PastelLocal` only accepts questions listed in `pastel/local/questions.py`, because that is the set it is *meant* to have models for. It raises a `ValueError` on construction otherwise, rather than answering with the wrong model.
+`PastelLocal` only accepts questions that have a fine-tuned model on disk. It raises a `ValueError` on construction otherwise, rather than answering with the wrong model.
 
 Installing the library does not pull in `transformers` and `torch` — they are an optional extra, so Gemini-only users don't pay for them:
 
@@ -30,13 +32,13 @@ uv sync --group ml-labeller    # to fine-tune new ones (includes the above)
 
 ### Which questions can actually be answered?
 
-`questions.py` is a hand-maintained declaration. Whether a question's model has really been trained, and is where we expect to find it, is a separate matter:
+`model_map.json`, written by training and read by inference, records every question that has a model. Whether that model is really on disk where we expect it is a separate matter:
 
 ```
 python -m pastel.local
 ```
 
-That reports each declared question as OK or MISSING, flags any trained model whose question was never added to `questions.py`, and prints where it looked. In code, `available_questions()` gives the declared questions with a trained model, and `PastelLocal.from_available_questions()` builds a model from exactly those — which is what the demo scripts use, so they work with a partly-trained set. Answering a declared-but-untrained question raises `FileNotFoundError` naming the question.
+That reports each recorded question as OK or MISSING and prints where it looked. In code, `available_questions()` gives the recorded questions with a trained model, and `PastelLocal.from_available_questions()` builds a model from exactly those — which is what the demo scripts use, so they work with a partly-trained set. Answering a recorded-but-untrained question raises `FileNotFoundError` naming the question.
 
 ### Where the models live
 
@@ -57,7 +59,11 @@ python -m local_models.label_sentences \
 
 A new model can then be trained using `finetune_encoder.py`. Pass the question to `build_one_question_answerer()` and it will extract the question and labelled sentences from the training file and fine tune a model.
 
-Each model is saved under a short id (`q00`, `q01`, ...). `pastel/local/model_registry.py` allocates those ids and records them in `model_map.json`, and inference looks them up in the same place — so training and inference always agree on which model answers which question. Add the new question to `pastel/local/questions.py` once its model exists, and it becomes available to `PastelLocal`.
+Each model is saved under a short id (`q00`, `q01`, ...). `pastel/local/model_registry.py` allocates those ids and records them in `model_map.json`, and inference looks them up in the same place — so training and inference always agree on which model answers which question. Once training has written that entry, the question is available to `PastelLocal`; nothing else needs updating.
+
+### What the map looks like
+
+`scripts/example_questions.json` is an example: the ten questions Full Fact's checkworthiness model uses, mapped to the ids their models were trained into. It is there to show the format, not to be used — training writes the real file itself, and a set of models always ships with its own.
 
 When all new questions have been set up, a new Pastel model can be trained with `demo_beam_search.py --backend local`.
 

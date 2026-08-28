@@ -2,24 +2,17 @@
 
 Each question gets its own fine-tuned model, saved in a directory named after
 a short id (`q00`, `q01`, ...). Training allocates those ids and records them
-in `model_map.json`; inference has to look up the same mapping, or it would
-answer a question with another question's model.
+in `model_map.json`; inference looks up the same mapping, or it would answer a
+question with another question's model.
 
-Before this map existed, ids were implicitly the question's index in
-`QUESTIONS`, so that is still the fallback when a question is not in the map.
-Note that the fallback is only correct while `QUESTIONS` keeps the order the
-models were trained in - which is exactly why the map is written.
-
-`QUESTIONS` is a hand-maintained declaration of what the local backend is
-meant to answer. What it can *actually* answer is whatever has a trained model
-on disk, which is what `available_questions()` reports.
+That map is the only source of truth for which questions the local backend can
+answer. The library declares no questions of its own: which questions to ask,
+and the weights to combine them with, belong to the downstream task.
 """
 
 import json
 import os
 from pathlib import Path
-
-from pastel.local.questions import QUESTIONS
 
 MODELS: dict[str, str] = {
     "ModernBERT-multilingual": "jhu-clsp/mmBERT-base",
@@ -67,36 +60,17 @@ def load_model_map(model_category: str = MODEL_CATEGORY) -> dict[str, str]:
 def model_id_for_question(question: str, model_category: str = MODEL_CATEGORY) -> str:
     """The model id (i.e. directory name) holding the model for `question`.
 
-    Raises ValueError for a question that has neither been trained nor appears
-    in QUESTIONS, because guessing would silently answer with the wrong model.
+    Raises ValueError for a question the map has no entry for, because guessing
+    would silently answer with the wrong model.
     """
-    question_map = load_model_map(model_category)
-    recorded = question_map.get(question)
-    if recorded is not None:
-        return recorded
-
-    try:
-        fallback = f"q{QUESTIONS.index(question):02d}"
-    except ValueError as exc:
+    recorded = load_model_map(model_category).get(question)
+    if recorded is None:
         raise ValueError(
             f"No fine-tuned model is recorded for the question: {question!r}. "
-            f"Questions must appear in pastel.local.questions.QUESTIONS or in "
-            f"{model_map_path(model_category)}."
-        ) from exc
-
-    # The index fallback is only safe while no other question has been recorded
-    # against that id. Once one has, this question's position in QUESTIONS says
-    # nothing about where its model is - so refuse rather than answer with
-    # somebody else's model.
-    owner = {model_id: q for q, model_id in question_map.items()}.get(fallback)
-    if owner is not None:
-        raise ValueError(
-            f"No fine-tuned model is recorded for the question: {question!r}, "
-            f"and its position in QUESTIONS points at {fallback}, which is "
-            f"recorded as the model for {owner!r}. Train a model for this "
-            f"question so it gets its own id in {model_map_path(model_category)}."
+            f"Train one with local_models.finetune_encoder, which records it "
+            f"in {model_map_path(model_category)}."
         )
-    return fallback
+    return recorded
 
 
 def checkpoints_for(model_id: str, model_category: str = MODEL_CATEGORY) -> list[Path]:
@@ -113,7 +87,7 @@ def checkpoints_for(model_id: str, model_category: str = MODEL_CATEGORY) -> list
 def latest_checkpoint(question: str, model_category: str = MODEL_CATEGORY) -> Path:
     """The newest checkpoint of the model that answers `question`.
 
-    Raises FileNotFoundError, naming the question, if the question is declared
+    Raises FileNotFoundError, naming the question, if the question is recorded
     but its model has never been trained (or is not where we are looking).
     """
     model_id = model_id_for_question(question, model_category)
@@ -137,21 +111,14 @@ def has_model(question: str, model_category: str = MODEL_CATEGORY) -> bool:
     return bool(checkpoints_for(model_id, model_category))
 
 
-def trained_questions(model_category: str = MODEL_CATEGORY) -> list[str]:
-    """Every question that has been trained, whether or not it is declared in
-    QUESTIONS. A question here but not in QUESTIONS has a model that no Pastel
-    model can currently use."""
+def available_questions(model_category: str = MODEL_CATEGORY) -> list[str]:
+    """The questions the local backend can answer: every question in the model
+    map with a trained model on disk, in the order the map records them."""
     return [
         question
         for question in load_model_map(model_category)
         if has_model(question, model_category)
     ]
-
-
-def available_questions(model_category: str = MODEL_CATEGORY) -> list[str]:
-    """The questions the local backend can really answer: those declared in
-    QUESTIONS that also have a trained model on disk, in QUESTIONS order."""
-    return [question for question in QUESTIONS if has_model(question, model_category)]
 
 
 def require_available_questions(model_category: str = MODEL_CATEGORY) -> list[str]:
@@ -167,14 +134,6 @@ def require_available_questions(model_category: str = MODEL_CATEGORY) -> list[st
             "and where."
         )
     return available
-
-
-def missing_questions(model_category: str = MODEL_CATEGORY) -> list[str]:
-    """Questions declared in QUESTIONS with no trained model on disk. Using one
-    of these raises FileNotFoundError at inference time."""
-    return [
-        question for question in QUESTIONS if not has_model(question, model_category)
-    ]
 
 
 def _existing_model_ids(model_category: str = MODEL_CATEGORY) -> list[int]:
@@ -199,29 +158,15 @@ def assign_model_id(question: str, model_category: str = MODEL_CATEGORY) -> str:
     if question in question_map:
         return question_map[question]
 
-    if question in QUESTIONS:
-        # Keep declared questions on their QUESTIONS index, which is what the
-        # models trained before this map existed were saved under.
-        new_id = f"q{QUESTIONS.index(question):02d}"
-    else:
-        # A brand new question must not land on an id that QUESTIONS, the map
-        # or the models already on disk are using.
-        recorded_ids = [
-            int(model_id[1:])
-            for model_id in question_map.values()
-            if model_id.startswith("q") and model_id[1:].isdigit()
-        ]
-        next_id = (
-            max(
-                [
-                    *recorded_ids,
-                    *_existing_model_ids(model_category),
-                    len(QUESTIONS) - 1,
-                ]
-            )
-            + 1
-        )
-        new_id = f"q{next_id:02d}"
+    # A new question must not land on an id the map or the models already on
+    # disk are using, or training it would overwrite an existing model.
+    recorded_ids = [
+        int(model_id[1:])
+        for model_id in question_map.values()
+        if model_id.startswith("q") and model_id[1:].isdigit()
+    ]
+    next_id = max([*recorded_ids, *_existing_model_ids(model_category), -1]) + 1
+    new_id = f"q{next_id:02d}"
 
     question_map[question] = new_id
     path = model_map_path(model_category)
@@ -233,33 +178,26 @@ def assign_model_id(question: str, model_category: str = MODEL_CATEGORY) -> str:
 
 
 def report(model_category: str = MODEL_CATEGORY) -> None:
-    """Print which declared questions have a trained model, and flag any drift
-    between QUESTIONS and what is actually on disk."""
+    """Print which recorded questions have a trained model on disk."""
     print(f"Models directory: {category_dir(model_category)}")
     print(f"Model map:        {model_map_path(model_category)}")
-    print(f"\n{len(QUESTIONS)} declared question(s):")
-    for question in QUESTIONS:
+
+    question_map = load_model_map(model_category)
+    if not question_map:
+        print("\nNo questions are recorded in the model map.")
+        return
+
+    print(f"\n{len(question_map)} recorded question(s):")
+    missing = []
+    for question, model_id in question_map.items():
         trained = has_model(question, model_category)
+        if not trained:
+            missing.append(question)
         marker = "OK     " if trained else "MISSING"
-        model_id = model_id_for_question(question, model_category) if trained else "  -"
         print(f"  [{marker}] {model_id}  {question[:70]}")
 
-    missing = missing_questions(model_category)
     if missing:
         print(
-            f"\n{len(missing)} declared question(s) have no trained model. "
+            f"\n{len(missing)} recorded question(s) have no trained model. "
             "Using one of these raises FileNotFoundError at inference time."
         )
-
-    undeclared = [
-        question
-        for question in trained_questions(model_category)
-        if question not in QUESTIONS
-    ]
-    if undeclared:
-        print(
-            f"\n{len(undeclared)} trained question(s) are not declared in "
-            "QUESTIONS, so no Pastel model can use them yet:"
-        )
-        for question in undeclared:
-            print(f"  {question}")

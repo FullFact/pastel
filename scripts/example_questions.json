@@ -1,0 +1,12 @@
+{
+    "Is this making a claim that is too good to be true?": "q00",
+    "Could believing this claim harm someone's health?": "q01",
+    "Does this sentence relate to many people?": "q02",
+    "Is this sentence likely to be believed by many people?": "q03",
+    "Could believing this claim lead to violence?": "q04",
+    "Does the sentence contain compare quantities, such as 'more' or 'less'?": "q05",
+    "Answer 'yes' if this is a general or universal claim or answer 'no' if it is about a single event or individual": "q06",
+    "Does the sentence discuss superlatives, such as 'biggest ever' or  'fastest growth'?": "q07",
+    "Is this sentence interesting to the average reader?": "q08",
+    "Does the sentence suggest a course of action?": "q09"
+}
