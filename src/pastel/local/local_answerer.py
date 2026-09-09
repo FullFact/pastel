@@ -87,11 +87,17 @@ def answer_question(question: str, sentences: list[str]) -> list[float]:
 
     input_text = [question + " " + sentence for sentence in sentences]
 
-    answers: list[float] = []
-    for start in range(0, len(input_text), BATCH_SIZE):
-        batch = input_text[start : start + BATCH_SIZE]
+    # Every batch is padded to its longest member, so batching sentences in
+    # file order makes short sentences pay for long ones. Grouping sentences of
+    # similar length together cuts that waste; the answers are written back
+    # into the caller's order.
+    by_length = sorted(range(len(input_text)), key=lambda i: len(input_text[i]))
+
+    answers: list[float] = [0.0] * len(input_text)
+    for start in range(0, len(by_length), BATCH_SIZE):
+        indices = by_length[start : start + BATCH_SIZE]
         inputs = tokenizer(
-            batch,
+            [input_text[i] for i in indices],
             truncation=True,
             padding=True,
             max_length=MAX_LENGTH,
@@ -101,7 +107,9 @@ def answer_question(question: str, sentences: list[str]) -> list[float]:
         with torch.no_grad():
             logits = model(**inputs).logits
 
-        answers.extend(torch.argmax(logits, dim=-1).float().tolist())
+        batch_answers = torch.argmax(logits, dim=-1).float().tolist()
+        for index, answer in zip(indices, batch_answers):
+            answers[index] = answer
 
     return answers
 
