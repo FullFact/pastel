@@ -9,7 +9,7 @@ At Full Fact, this approach is used to help identify claims that are worth bring
 The `pastel/pastel.py` module defines `PastelModel`: the features-to-weights model itself, saving and loading it, and turning a set of answers into a single score. It is abstract - answering the questions is left to a backend, which is the only part that differs between them:
 
 * `pastel/pastel_gemini.py` — `PastelGemini` sends all of a model's questions to Gemini in one prompt per sentence.
-* `pastel/pastel_local.py` — `PastelLocal` answers each question with its own locally fine-tuned encoder model. `pastel/local/` holds the question list, the model registry and the loading code; training new models lives in `local_models/` (see its README) and is not part of the installable library.
+* `pastel/pastel_local.py` — `PastelLocal` answers every question with one locally fine-tuned encoder, which has a classification head per question and so answers them all in a single pass per sentence. `pastel/local/` holds the model registry and the loading code; training the model lives in `local_models/` (see its README) and is not part of the installable library.
 
 Both are drop-in replacements for each other, so pick one at runtime with `pastel.get_backend()` rather than by changing imports:
 
