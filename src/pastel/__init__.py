@@ -5,7 +5,8 @@ Two backends answer those questions and are otherwise interchangeable:
 
 * `PastelGemini` sends the questions to Gemini in a single prompt per sentence.
 * `PastelLocal` uses one locally fine-tuned encoder model per question, and so
-  can only answer questions in `pastel.local.questions.QUESTIONS`.
+  can only answer questions that have been fine-tuned and recorded in its
+  model map.
 
 Choose one at runtime with `get_backend()` rather than by editing an import,
 so the same code can be run either way.

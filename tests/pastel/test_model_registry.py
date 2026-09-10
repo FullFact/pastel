@@ -11,11 +11,12 @@ from pathlib import Path
 import pytest
 
 from pastel.local import model_registry
-from pastel.local.questions import QUESTIONS
 
 # mypy: ignore-errors
 
 CATEGORY = "ModernBERT-multilingual"
+Q1 = "Does this sentence relate to many people?"
+Q2 = "Is this sentence a joke or satirical?"
 
 
 @pytest.fixture
@@ -40,52 +41,38 @@ def write_map(models_dir: Path, mapping: dict) -> None:
     )
 
 
-def test_recorded_mapping_wins_over_the_questions_index(models_dir: Path) -> None:
-    """The whole point of the map: a question's model id does not have to match
-    its position in QUESTIONS."""
-    write_map(models_dir, {QUESTIONS[0]: "q07"})
-    assert model_registry.model_id_for_question(QUESTIONS[0]) == "q07"
+def test_the_map_is_the_source_of_truth(models_dir: Path) -> None:
+    write_map(models_dir, {Q1: "q07"})
+    assert model_registry.model_id_for_question(Q1) == "q07"
 
 
-def test_falls_back_to_the_questions_index(models_dir: Path) -> None:
-    """Models trained before the map existed are named by QUESTIONS index."""
-    assert model_registry.model_id_for_question(QUESTIONS[3]) == "q03"
-
-
-def test_unknown_question_raises(models_dir: Path) -> None:
+def test_unmapped_question_raises(models_dir: Path) -> None:
+    """Nothing is guessed from a question's position in any list, so a question
+    the map doesn't know is an error rather than another question's model."""
+    write_map(models_dir, {Q1: "q00"})
     with pytest.raises(ValueError, match="No fine-tuned model is recorded"):
         model_registry.model_id_for_question("Is this sentence about olive oil?")
 
 
-def test_assign_keeps_declared_questions_on_their_index(models_dir: Path) -> None:
-    assert model_registry.assign_model_id(QUESTIONS[2]) == "q02"
-    # and records it, so the next lookup doesn't rely on the fallback
-    assert model_registry.load_model_map() == {QUESTIONS[2]: "q02"}
-
-
 def test_assign_is_stable_for_the_same_question(models_dir: Path) -> None:
-    first = model_registry.assign_model_id("A brand new question?")
-    assert model_registry.assign_model_id("A brand new question?") == first
+    first = model_registry.assign_model_id(Q1)
+    assert model_registry.assign_model_id(Q1) == first
 
 
-def test_assign_does_not_collide_with_the_questions_list(models_dir: Path) -> None:
-    """A new question must land past every index QUESTIONS already claims,
-    otherwise training it would overwrite an existing model."""
-    new_id = model_registry.assign_model_id("A brand new question?")
-    assert new_id == f"q{len(QUESTIONS):02d}"
+def test_assign_starts_from_zero_and_records_the_id(models_dir: Path) -> None:
+    assert model_registry.assign_model_id(Q1) == "q00"
+    assert model_registry.load_model_map() == {Q1: "q00"}
 
 
 def test_assign_does_not_collide_with_models_on_disk(models_dir: Path) -> None:
     """Even with no map, an existing model directory must not be overwritten."""
-    high = len(QUESTIONS) + 4
-    (models_dir / CATEGORY / f"q{high:02d}").mkdir()
-    assert model_registry.assign_model_id("A brand new question?") == f"q{high + 1:02d}"
+    (models_dir / CATEGORY / "q04").mkdir()
+    assert model_registry.assign_model_id(Q1) == "q05"
 
 
 def test_assign_does_not_collide_with_recorded_ids(models_dir: Path) -> None:
-    high = len(QUESTIONS) + 2
-    write_map(models_dir, {"An older new question?": f"q{high:02d}"})
-    assert model_registry.assign_model_id("A brand new question?") == f"q{high + 1:02d}"
+    write_map(models_dir, {Q2: "q12"})
+    assert model_registry.assign_model_id(Q1) == "q13"
 
 
 def test_models_dir_comes_from_the_environment(tmp_path: Path, monkeypatch) -> None:
@@ -99,66 +86,42 @@ def test_models_dir_comes_from_the_environment(tmp_path: Path, monkeypatch) -> N
 
 
 def test_nothing_is_available_without_trained_models(models_dir: Path) -> None:
-    """QUESTIONS is a declaration; an empty models directory means none of it
-    can actually be answered."""
+    """A recorded question whose model has not been trained is not available."""
+    write_map(models_dir, {Q1: "q00"})
     assert model_registry.available_questions() == []
-    assert model_registry.missing_questions() == list(QUESTIONS)
-    assert model_registry.has_model(QUESTIONS[0]) is False
+    assert model_registry.has_model(Q1) is False
 
 
 def test_available_questions_reflects_what_is_on_disk(models_dir: Path) -> None:
+    write_map(models_dir, {Q1: "q00", Q2: "q01"})
     add_trained_model(models_dir, "q00")
-    add_trained_model(models_dir, "q02")
 
-    assert model_registry.available_questions() == [QUESTIONS[0], QUESTIONS[2]]
-    assert QUESTIONS[1] in model_registry.missing_questions()
+    assert model_registry.available_questions() == [Q1]
 
 
 def test_available_questions_follows_the_recorded_map(models_dir: Path) -> None:
-    """A question whose model was trained out of order is still found - and the
-    question whose index that id collides with is not falsely claimed."""
-    write_map(models_dir, {QUESTIONS[1]: "q09"})
+    """A question whose model was trained out of order is still found."""
+    write_map(models_dir, {Q1: "q09"})
     add_trained_model(models_dir, "q09")
 
-    assert model_registry.available_questions() == [QUESTIONS[1]]
-
-
-def test_index_fallback_refuses_an_id_another_question_owns(
-    models_dir: Path,
-) -> None:
-    """QUESTIONS[9] would fall back to q09, but the map gives q09 to another
-    question - answering with it would be silently wrong."""
-    write_map(models_dir, {QUESTIONS[1]: "q09"})
-    add_trained_model(models_dir, "q09")
-
-    with pytest.raises(ValueError, match="recorded as the model for"):
-        model_registry.model_id_for_question(QUESTIONS[9])
-    assert model_registry.has_model(QUESTIONS[9]) is False
+    assert model_registry.available_questions() == [Q1]
 
 
 def test_latest_checkpoint_picks_the_newest(models_dir: Path) -> None:
+    write_map(models_dir, {Q1: "q00"})
     add_trained_model(models_dir, "q00", step=50)
     newest = add_trained_model(models_dir, "q00", step=1000)
     # sorted numerically, not as strings - "1000" must beat "50"
-    assert model_registry.latest_checkpoint(QUESTIONS[0]) == newest
+    assert model_registry.latest_checkpoint(Q1) == newest
 
 
 def test_latest_checkpoint_names_the_untrained_question(models_dir: Path) -> None:
+    write_map(models_dir, {Q1: "q00"})
     with pytest.raises(FileNotFoundError) as excinfo:
-        model_registry.latest_checkpoint(QUESTIONS[0])
+        model_registry.latest_checkpoint(Q1)
     message = str(excinfo.value)
-    assert QUESTIONS[0] in message
+    assert Q1 in message
     assert model_registry.MODELS_DIR_ENV_VAR in message
-
-
-def test_trained_questions_includes_undeclared_ones(models_dir: Path) -> None:
-    """A model trained for a question that was never added to QUESTIONS is
-    findable, so the drift can be reported."""
-    write_map(models_dir, {"A question nobody declared?": "q42"})
-    add_trained_model(models_dir, "q42")
-
-    assert model_registry.trained_questions() == ["A question nobody declared?"]
-    assert model_registry.available_questions() == []
 
 
 def test_require_available_questions_explains_an_empty_directory(
@@ -167,5 +130,6 @@ def test_require_available_questions_explains_an_empty_directory(
     with pytest.raises(FileNotFoundError, match="No trained local models"):
         model_registry.require_available_questions()
 
+    write_map(models_dir, {Q1: "q00"})
     add_trained_model(models_dir, "q00")
-    assert model_registry.require_available_questions() == [QUESTIONS[0]]
+    assert model_registry.require_available_questions() == [Q1]

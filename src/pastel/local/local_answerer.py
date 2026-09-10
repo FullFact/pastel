@@ -6,10 +6,10 @@ from typing import Any
 from pastel.local.model_registry import (
     MODEL_CATEGORY,
     MODELS,
+    available_questions,
     latest_checkpoint,
     model_id_for_question,
 )
-from pastel.local.questions import QUESTIONS
 
 MAX_LENGTH = 128
 BATCH_SIZE = 32
@@ -71,8 +71,8 @@ def _cached_model(question: str) -> tuple[Any, Any]:
 
 def preload_models(questions: list[str] | None = None) -> None:
     """Load models into the cache up front, so the first call to
-    answer_question() doesn't pay for it. Defaults to every question."""
-    for question in QUESTIONS if questions is None else questions:
+    answer_question() doesn't pay for it. Defaults to every available question."""
+    for question in available_questions() if questions is None else questions:
         _cached_model(question)
 
 
@@ -109,14 +109,15 @@ def answer_question(question: str, sentences: list[str]) -> list[float]:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-    preload_models()
+    questions = available_questions()
+    preload_models(questions)
     sentences = [
         "Scientists have shown that tamoxifen patients are more likely to develop deadly blood clots and cancer.",
         "Rubbing olive oil onto a lump under your skin will make it disappear in a few days.",
     ]
-    answers = {question: answer_question(question, sentences) for question in QUESTIONS}
+    answers = {question: answer_question(question, sentences) for question in questions}
 
     for idx, sentence in enumerate(sentences):
         print(f"\n{'*' * 80}\n{sentence}\n")
-        for question in QUESTIONS:
+        for question in questions:
             print(f"{question[:60]:60s}  {answers[question][idx]}")

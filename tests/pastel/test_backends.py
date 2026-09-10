@@ -1,5 +1,8 @@
 """Tests for choosing a backend and for the local backend's constraints."""
 
+import json
+from pathlib import Path
+
 import pytest
 
 from pastel import (
@@ -9,10 +12,32 @@ from pastel import (
     PastelLocal,
     get_backend,
 )
-from pastel.local.questions import QUESTIONS
+from pastel.local import model_registry
 from pastel.models import BiasType
 
 # mypy: ignore-errors
+
+CATEGORY = "ModernBERT-multilingual"
+QUESTIONS = [
+    "Does this sentence relate to many people?",
+    "Could believing this claim harm someone's health?",
+]
+
+
+@pytest.fixture
+def trained_models(tmp_path: Path, monkeypatch) -> Path:
+    """A models directory with a trained model for each of QUESTIONS, which is
+    what makes them answerable by the local backend."""
+    monkeypatch.setenv(model_registry.MODELS_DIR_ENV_VAR, str(tmp_path))
+    category = tmp_path / CATEGORY
+    category.mkdir()
+    mapping = {question: f"q{i:02d}" for i, question in enumerate(QUESTIONS)}
+    (category / model_registry.MODEL_MAP_FILENAME).write_text(
+        json.dumps(mapping), encoding="utf-8"
+    )
+    for model_id in mapping.values():
+        (category / model_id / "checkpoint-100").mkdir(parents=True)
+    return tmp_path
 
 
 def test_default_backend_is_gemini(monkeypatch) -> None:
@@ -39,18 +64,18 @@ def test_unknown_backend_is_rejected() -> None:
         get_backend("hal9000")
 
 
-def test_local_accepts_its_own_questions() -> None:
+def test_local_accepts_trained_questions(trained_models: Path) -> None:
     model = PastelLocal.from_feature_list(list(QUESTIONS) + ["is_claim_type_quantity"])
     assert model.get_questions() == list(QUESTIONS)
     assert len(model.get_functions()) == 1
 
 
-def test_local_rejects_questions_it_has_no_model_for() -> None:
+def test_local_rejects_questions_it_has_no_model_for(trained_models: Path) -> None:
     with pytest.raises(ValueError, match="no fine-tuned model"):
         PastelLocal({BiasType.BIAS: 1.0, "Is this sentence about olive oil?": 1.0})
 
 
-def test_local_rejects_unsupported_questions_when_copied() -> None:
+def test_local_rejects_unsupported_questions_when_copied(trained_models: Path) -> None:
     """The check has to survive the copy used throughout training, or an
     unanswerable question could sneak in that way."""
     model = PastelLocal.from_feature_list([QUESTIONS[0]])
@@ -65,7 +90,9 @@ def test_gemini_accepts_any_question() -> None:
     assert model.get_questions() == ["Is this sentence about olive oil?"]
 
 
-async def test_local_answers_questions_and_functions(monkeypatch) -> None:
+async def test_local_answers_questions_and_functions(
+    monkeypatch, trained_models: Path
+) -> None:
     """The local backend answers each question with its own model and computes
     the functions itself."""
     from pastel import pastel_local
@@ -99,7 +126,7 @@ async def test_local_answers_questions_and_functions(monkeypatch) -> None:
     assert answers[sentences[1]][quantity] == 0.0
 
 
-async def test_local_with_no_sentences() -> None:
+async def test_local_with_no_sentences(trained_models: Path) -> None:
     model = PastelLocal.from_feature_list([QUESTIONS[0]])
     assert await model.get_answers_to_questions([]) == {}
 
