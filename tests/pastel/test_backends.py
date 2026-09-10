@@ -26,17 +26,16 @@ QUESTIONS = [
 
 @pytest.fixture
 def trained_models(tmp_path: Path, monkeypatch) -> Path:
-    """A models directory with a trained model for each of QUESTIONS, which is
-    what makes them answerable by the local backend."""
+    """A models directory with a trained model whose heads answer QUESTIONS,
+    which is what makes them answerable by the local backend."""
     monkeypatch.setenv(model_registry.MODELS_DIR_ENV_VAR, str(tmp_path))
     category = tmp_path / CATEGORY
     category.mkdir()
-    mapping = {question: f"q{i:02d}" for i, question in enumerate(QUESTIONS)}
+    mapping = {question: head for head, question in enumerate(QUESTIONS)}
     (category / model_registry.MODEL_MAP_FILENAME).write_text(
         json.dumps(mapping), encoding="utf-8"
     )
-    for model_id in mapping.values():
-        (category / model_id / "checkpoint-100").mkdir(parents=True)
+    (category / model_registry.MODEL_DIR_NAME / "checkpoint-100").mkdir(parents=True)
     return tmp_path
 
 
@@ -93,18 +92,20 @@ def test_gemini_accepts_any_question() -> None:
 async def test_local_answers_questions_and_functions(
     monkeypatch, trained_models: Path
 ) -> None:
-    """The local backend answers each question with its own model and computes
-    the functions itself."""
+    """The local backend answers every question in one pass of the shared
+    encoder and computes the functions itself."""
     from pastel import pastel_local
     from pastel.models import Sentence
 
     asked = []
 
-    def fake_answer_question(question: str, sentences: list[str]) -> list[float]:
-        asked.append(question)
-        return [1.0] * len(sentences)
+    def fake_answer_questions(
+        questions: list[str], sentences: list[str]
+    ) -> dict[str, list[float]]:
+        asked.append(questions)
+        return {question: [1.0] * len(sentences) for question in questions}
 
-    monkeypatch.setattr(pastel_local, "answer_question", fake_answer_question)
+    monkeypatch.setattr(pastel_local, "answer_questions", fake_answer_questions)
 
     model = PastelLocal.from_feature_list(
         [QUESTIONS[0], QUESTIONS[1], "is_claim_type_quantity"]
@@ -115,7 +116,8 @@ async def test_local_answers_questions_and_functions(
     ]
     answers = await model.get_answers_to_questions(sentences)
 
-    assert asked == [QUESTIONS[0], QUESTIONS[1]]
+    # one call, not one per question
+    assert asked == [[QUESTIONS[0], QUESTIONS[1]]]
     assert set(answers) == set(sentences)
     for sentence in sentences:
         assert answers[sentence][QUESTIONS[0]] == 1.0
@@ -164,4 +166,4 @@ def test_local_dependency_error_is_actionable(monkeypatch) -> None:
 
     monkeypatch.setattr(builtins, "__import__", no_torch)
     with pytest.raises(ImportError, match="uv sync --extra local"):
-        local_answerer.answer_question(QUESTIONS[0], ["A sentence."])
+        local_answerer.answer_questions(QUESTIONS, ["A sentence."])

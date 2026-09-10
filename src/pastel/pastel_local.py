@@ -1,19 +1,20 @@
 import asyncio
 from typing import Self, Sequence
 
-from pastel.local.local_answerer import answer_question, preload_models
+from pastel.local.local_answerer import answer_questions, preload_models
 from pastel.local.model_registry import has_model, require_available_questions
 from pastel.models import FEATURE_TYPE, Sentence
 from pastel.pastel import PastelModel
 
 
 class PastelLocal(PastelModel):
-    """Answers the model's questions with the locally fine-tuned encoder models.
+    """Answers the model's questions with the locally fine-tuned encoder.
 
-    There is one fine-tuned model per question, so this backend can only answer
-    questions that have been trained and recorded in the model map - which is
-    what `pastel.local.model_registry.available_questions()` reports. The
-    questions themselves belong to the downstream task, not to this library.
+    One fine-tuned model answers every question, with a head per question, so
+    this backend can only answer questions that have been trained and recorded
+    in the model map - which is what
+    `pastel.local.model_registry.available_questions()` reports. The questions
+    themselves belong to the downstream task, not to this library.
     """
 
     def __init__(self, model: dict[FEATURE_TYPE, float]) -> None:
@@ -37,10 +38,10 @@ class PastelLocal(PastelModel):
         return cls.from_feature_list([*require_available_questions(), *extra_features])
 
     def preload(self) -> None:
-        """Load this model's fine-tuned models into memory now, rather than on
-        the first call to get_answers_to_questions(). Worth doing before timing
-        anything, or before a long batch run - and it surfaces a missing model
-        up front rather than part-way through a batch."""
+        """Load the fine-tuned model into memory now, rather than on the first
+        call to get_answers_to_questions(). Worth doing before timing anything,
+        or before a long batch run - and it surfaces a missing model up front
+        rather than part-way through a batch."""
         preload_models(self.get_questions())
 
     async def get_answers_to_questions(
@@ -57,15 +58,18 @@ class PastelLocal(PastelModel):
             sentence: {} for sentence in sentences
         }
 
-        # We run each question model against all sentences. Inference is
-        # synchronous and CPU/GPU-bound, so keep it off the event loop.
+        # One pass of the shared encoder answers every question, so they all
+        # go together. Inference is synchronous and CPU/GPU-bound, so keep it
+        # off the event loop.
         sentence_texts = [sentence.sentence_text for sentence in sentences]
-        for question in self.get_questions():
+        questions = self.get_questions()
+        if questions:
             question_answers = await asyncio.to_thread(
-                answer_question, question, sentence_texts
+                answer_questions, questions, sentence_texts
             )
-            for sentence, answer in zip(sentences, question_answers):
-                answers[sentence][question] = answer
+            for question, scores in question_answers.items():
+                for sentence, answer in zip(sentences, scores):
+                    answers[sentence][question] = answer
 
         # Then get values from the functions
         for sentence in sentences:

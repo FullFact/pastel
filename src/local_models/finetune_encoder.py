@@ -1,8 +1,18 @@
 # Claude-created
-"""Fine-tune encoder-only LLMs on labelled data.
+"""Fine-tune one encoder to answer every Pastel question.
 
+The encoder body is shared and each question gets its own binary
+classification head, so the questions are trained together rather than one
+model at a time: a sentence labelled for only some of the questions trains
+those heads and leaves the others alone. That is what makes inference a single
+forward pass per sentence instead of one per question.
 
-Each model is fine-tuned separately for each question (NLI-style: input = question + sentence).
+Because the body is shared, a retrain replaces the whole model - adding a
+question means training all of them again.
+
+The input is the bare sentence: each head answers one fixed question, so
+prefixing the question text would only spend the forward pass encoding a
+constant. Inference does the same.
 
 Dependencies for local fine-tuning:
     uv sync --group ml-labeller
@@ -22,14 +32,30 @@ from typing import Any
 
 import datasets as hf_datasets  # type: ignore
 import numpy as np
-from sklearn.model_selection import StratifiedShuffleSplit  # type: ignore
 from transformers import AutoTokenizer
 
-from pastel.local.model_registry import assign_model_id, models_dir
+from pastel.local.model_registry import (
+    MODEL_CATEGORY,
+    MODELS,
+    assign_head,
+    load_model_map,
+    model_dir,
+    model_map_path,
+    models_dir,
+)
+from pastel.local.multi_head_encoder import IGNORE_LABEL, MultiHeadEncoder
 
 logger = logging.getLogger(__name__)
 
 LABELLED_DATA_PATH = Path("data/local_models/labelled_sentences.jsonl")
+
+# The answer Gemini gives when it is unsure. Those sentences teach the head
+# nothing, so they are left unlabelled rather than rounded one way or another.
+UNSURE_ANSWER = 0.5
+
+RANDOM_SEED = 42
+MAX_LENGTH = 128  # 128 is enough for c.95% of sentences; 256 would cover them all
+TEST_FRACTION = 0.2
 
 
 def setup_logging(output_dir: Path) -> None:
@@ -47,31 +73,21 @@ def setup_logging(output_dir: Path) -> None:
     logger.info("Logging to %s", log_path)
 
 
-# Just using ModernBERT-multilingual but other options are available
-MODELS: dict[str, str] = {
-    "ModernBERT-multilingual": "jhu-clsp/mmBERT-base",
-    # "mDeBERTa-v3-base": "microsoft/mdeberta-v3-base",
-    # "XLM-RoBERTa-base": "FacebookAI/xlm-roberta-base",
-}
-
-RANDOM_SEED = 42
-MAX_LENGTH = 128  # 128 is enough for c.95% of sentences; 256 would cover them all
-TEST_FRACTION = 0.2
-
-
 @dataclass
-class QuestionDataset:
-    # set of training data for one Pastel question
-    question: str
-    inputs: list[str]
-    labels: list[int]
+class MultiQuestionDataset:
+    """Every question's labelled data at once: one row per sentence, holding
+    one label per head."""
+
+    questions: list[str]  # in head order: questions[i] is answered by head i
+    sentences: list[str]
+    labels: list[list[int]]  # IGNORE_LABEL where a sentence has no answer
 
 
 @dataclass
 class ModelResult:
     model_name: str
     question: str
-    question_label: str
+    head: int
     n_train: int
     n_test: int
     accuracy: float
@@ -79,7 +95,7 @@ class ModelResult:
     f1_macro: float
     precision: float
     recall: float
-    train_seconds: float
+    train_seconds: float  # for the whole model: the questions train together
 
 
 def load_labelled_data(input_path: Path) -> list[dict[str, Any]]:
@@ -93,97 +109,94 @@ def load_labelled_data(input_path: Path) -> list[dict[str, Any]]:
     return records
 
 
-def build_question_dataset(
-    records: list[dict[str, Any]],
-    question: str,
-) -> QuestionDataset:
-    """Reformat trainig data into a QuestionDataSet object"""
-    inputs, labels = [], []
-    n_filtered = 0
+def questions_in(records: list[dict[str, Any]]) -> list[str]:
+    """Every question the labelled data has answers for, first seen first."""
+    questions: dict[str, None] = {}
+    for record in records:
+        questions.update(dict.fromkeys(record.get("question_answers", {})))
+    return list(questions)
+
+
+def questions_in_head_order(questions: list[str]) -> list[str]:
+    """Allocate a head to each question, and return them in head order - which
+    is the order the model's heads will be in.
+
+    Every question the map already records has to be trained too. The body is
+    shared, so a retrain replaces the previous model outright: a question left
+    out would keep a head index that the new model has either not trained, or
+    trained for something else.
+    """
+    heads = {question: assign_head(question) for question in questions}
+
+    untrained = [question for question in load_model_map() if question not in heads]
+    if untrained:
+        raise ValueError(
+            "One model answers every question, so a retrain has to cover all "
+            "of them. These are recorded in the model map but were not passed "
+            "in: " + "; ".join(untrained) + f". Either include them, or remove "
+            f"them from {model_map_path()} to give up answering them."
+        )
+
+    in_head_order = sorted(questions, key=lambda question: heads[question])
+    if [heads[question] for question in in_head_order] != list(range(len(heads))):
+        raise ValueError(
+            f"The head indices in {model_map_path()} have gaps or duplicates "
+            f"({heads}), so they cannot be a model's heads. Correct the file, "
+            "or delete it to allocate them again from scratch."
+        )
+    return in_head_order
+
+
+def build_dataset(
+    records: list[dict[str, Any]], questions: list[str]
+) -> MultiQuestionDataset:
+    """Reformat the labelled records into one row per sentence, with a label
+    for every question that sentence has an answer for."""
+
+    def label(answers: dict[str, float], question: str) -> int:
+        answer = answers.get(question)
+        if answer is None or answer == UNSURE_ANSWER:
+            return IGNORE_LABEL
+        return int(answer)
+
+    sentences, labels = [], []
     for record in records:
         answers = record.get("question_answers", {})
-        if question not in answers:
-            print(f"No answers for question {question}")
+        row = [label(answers, question) for question in questions]
+        if all(value == IGNORE_LABEL for value in row):
             continue
-        answer = answers[question]
-        if answer == 0.5:
-            n_filtered += 1
-            continue
-        inputs.append(question + " " + record["sentence_text"])
-        labels.append(int(answer))
-    if n_filtered:
+        sentences.append(record["sentence_text"])
+        labels.append(row)
+
+    label_array = np.array(labels)
+    for head, question in enumerate(questions):
+        answered = label_array[:, head] != IGNORE_LABEL
         logger.info(
-            "Question %r: filtered %d unsure (0.5) records, %d remaining",
-            question[:50],
-            n_filtered,
-            len(inputs),
+            "head %02d: %d labelled, %d yes  %s",
+            head,
+            int(answered.sum()),
+            int((label_array[:, head] == 1).sum()),
+            question[:60],
         )
-    return QuestionDataset(question=question, inputs=inputs, labels=labels)
+
+    return MultiQuestionDataset(questions=questions, sentences=sentences, labels=labels)
 
 
-def split_dataset(
-    qd: QuestionDataset,
-    test_fraction: float = TEST_FRACTION,
-    random_state: int = RANDOM_SEED,
-) -> tuple[QuestionDataset, QuestionDataset] | None:
-    """
-    Stratified train/test split.
-    Returns None (and warns) if a class has fewer than 2 examples.
-    """
-
-    labels_arr = np.array(qd.labels)
-    unique, counts = np.unique(labels_arr, return_counts=True)
-
-    if len(unique) < 2:
-        logger.warning(
-            "Question %r: only one class present (%s), skipping.",
-            qd.question[:50],
-            unique,
-        )
-        return None
-
-    if counts.min() < 2:
-        logger.warning(
-            "Question %r: class %s has only %d example(s), skipping.",
-            qd.question[:50],
-            unique[counts.argmin()],
-            counts.min(),
-        )
-        return None
-
-    sss = StratifiedShuffleSplit(
-        n_splits=1, test_size=test_fraction, random_state=random_state
-    )
-    indices = list(range(len(qd.inputs)))
-    train_idx, test_idx = next(sss.split(indices, qd.labels))
-
-    train_qd = QuestionDataset(
-        question=qd.question,
-        inputs=[qd.inputs[i] for i in train_idx],
-        labels=[qd.labels[i] for i in train_idx],
-    )
-    test_qd = QuestionDataset(
-        question=qd.question,
-        inputs=[qd.inputs[i] for i in test_idx],
-        labels=[qd.labels[i] for i in test_idx],
-    )
-    return train_qd, test_qd
-
-
-def tokenise_dataset(qd: QuestionDataset, tokenizer: Any) -> hf_datasets.Dataset:
-
+def tokenise_dataset(
+    dataset: MultiQuestionDataset, tokenizer: Any
+) -> hf_datasets.Dataset:
     tokenised = tokenizer(
-        qd.inputs,
+        dataset.sentences,
         padding="max_length",
         truncation=True,
         max_length=MAX_LENGTH,
     )
     data = {k: v for k, v in tokenised.items()}
-    data["labels"] = qd.labels
+    data["labels"] = dataset.labels
     return hf_datasets.Dataset.from_dict(data)
 
 
-def compute_metrics(eval_pred: Any) -> dict[str, float]:
+def binary_metrics(labels: np.ndarray, preds: np.ndarray) -> dict[str, float]:
     from sklearn.metrics import (  # type: ignore
         accuracy_score,
         f1_score,
@@ -191,48 +204,65 @@ def compute_metrics(eval_pred: Any) -> dict[str, float]:
         recall_score,
     )
 
-    logits, label_ids = eval_pred
-    preds = np.argmax(logits, axis=-1)
+    if len(labels) == 0:
+        return dict.fromkeys(
+            ("accuracy", "f1_binary", "f1_macro", "precision", "recall"), float("nan")
+        )
     return {
-        "accuracy": float(accuracy_score(label_ids, preds)),
-        "f1_binary": float(
-            f1_score(label_ids, preds, average="binary", zero_division=0)
-        ),
-        "f1_macro": float(f1_score(label_ids, preds, average="macro", zero_division=0)),
+        "accuracy": float(accuracy_score(labels, preds)),
+        "f1_binary": float(f1_score(labels, preds, average="binary", zero_division=0)),
+        "f1_macro": float(f1_score(labels, preds, average="macro", zero_division=0)),
         "precision": float(
-            precision_score(label_ids, preds, average="binary", zero_division=0)
+            precision_score(labels, preds, average="binary", zero_division=0)
         ),
-        "recall": float(
-            recall_score(label_ids, preds, average="binary", zero_division=0)
-        ),
+        "recall": float(recall_score(labels, preds, average="binary", zero_division=0)),
     }
 
 
-def finetune_one_model(
-    model_key: str,
-    model_id: str,
+def make_compute_metrics(questions: list[str]) -> Any:
+    """Metrics per question, since one number over all the heads at once would
+    hide a head that has stopped working. Each head is only scored on the
+    sentences that have an answer for its question."""
+
+    def compute_metrics(eval_pred: Any) -> dict[str, float]:
+        logits, label_ids = eval_pred
+        preds = np.argmax(logits, axis=-1)  # (sentences, heads)
+
+        metrics: dict[str, float] = {}
+        for head in range(len(questions)):
+            answered = label_ids[:, head] != IGNORE_LABEL
+            for name, value in binary_metrics(
+                label_ids[answered, head], preds[answered, head]
+            ).items():
+                metrics[f"q{head:02d}_{name}"] = value
+
+        # one number to compare retrains by
+        metrics["mean_f1_binary"] = float(
+            np.nanmean([metrics[f"q{h:02d}_f1_binary"] for h in range(len(questions))])
+        )
+        return metrics
+
+    return compute_metrics
+
+
+def finetune_multi_head(
+    base_model_id: str,
+    questions: list[str],
     train_ds: hf_datasets.Dataset,
     test_ds: hf_datasets.Dataset,
     output_dir: Path,
-    question_label: str,
     epochs: int,
     batch_size: int,
     lr: float,
     save_checkpoints: bool,
 ) -> tuple[dict[str, float], float]:
-    from transformers import (
-        AutoModelForSequenceClassification,
-        Trainer,
-        TrainingArguments,
-    )
+    """Train the shared encoder and every head together."""
+    from transformers import Trainer, TrainingArguments
 
-    """Train an encoder model to answer true/false questions"""
-
-    checkpoint_dir = output_dir / model_key / question_label
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     training_args = TrainingArguments(
-        output_dir=str(checkpoint_dir),
+        output_dir=str(output_dir),
         num_train_epochs=epochs,
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=batch_size,
@@ -247,14 +277,14 @@ def finetune_one_model(
         logging_steps=50,
     )
 
-    model = AutoModelForSequenceClassification.from_pretrained(model_id, num_labels=2)
+    model = MultiHeadEncoder.from_base_model(base_model_id, len(questions))
 
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_ds,
         eval_dataset=test_ds,
-        compute_metrics=compute_metrics,
+        compute_metrics=make_compute_metrics(questions),
     )
 
     t0 = time.time()
@@ -280,96 +310,15 @@ def auto_detect_device() -> str:
     return "cpu"
 
 
-def get_question_id(question: str) -> str:
-    """The model id (directory name) to train this question's model into.
-    Shared with inference via pastel.local.model_registry, so that
-    local_answerer looks the model up under the same name."""
-    return assign_model_id(question)
-
-
-def train_one_model(
-    question_dataset: QuestionDataset,
-    output_dir: Path,
-    epochs: int,
-    batch_size: int,
-    lr: float,
-    save_checkpoints: bool,
-    csv_path: Path,
-) -> list[ModelResult]:
-    """For this question, load the annotated dataset then train a local transformer model.
-    Update the file mapping questions to model names."""
-
-    results: list[ModelResult] = []
-    question = question_dataset.question
-    question_label = get_question_id(question)
-
-    # for q_idx, qd in enumerate(question_datasets):
-    split = split_dataset(question_dataset)
-    if split is None:
-        return []
-    #     fail # TODO: handle this correctly: raise exception as it's a pretty terminal failing
-    train_qd, test_qd = split
-    # question_label = f"q{q_idx:02d}"
-    logger.info(
-        "Question %s: (train=%d, test=%d)",
-        question[:60],
-        len(train_qd.inputs),
-        len(test_qd.inputs),
-    )
-
-    for model_key, model_id in MODELS.items():
-        logger.info("  Training %s (%s)...", model_key, model_id)
-        tokenizer = AutoTokenizer.from_pretrained(model_id)
-
-        train_ds = tokenise_dataset(train_qd, tokenizer)
-        test_ds = tokenise_dataset(test_qd, tokenizer)
-        print(f"Training '{question[:40]}...' ")
-        try:
-            metrics, elapsed = finetune_one_model(
-                model_key=model_key,
-                model_id=model_id,
-                train_ds=train_ds,
-                test_ds=test_ds,
-                output_dir=output_dir,
-                question_label=question_label,
-                epochs=epochs,
-                batch_size=batch_size,
-                lr=lr,
-                save_checkpoints=save_checkpoints,
-            )
-        except Exception as e:
-            logger.error("  Failed for %s / %s", model_key, e)
-            continue
-
-        result = ModelResult(
-            model_name=model_key,
-            question=question,
-            question_label=question_label,
-            n_train=len(train_qd.inputs),
-            n_test=len(test_qd.inputs),
-            accuracy=metrics.get("accuracy", float("nan")),
-            f1_binary=metrics.get("f1_binary", float("nan")),
-            f1_macro=metrics.get("f1_macro", float("nan")),
-            precision=metrics.get("precision", float("nan")),
-            recall=metrics.get("recall", float("nan")),
-            train_seconds=elapsed,
-        )
-        results.append(result)
-        append_result_csv(result, csv_path)
-        logger.info(
-            "    accuracy=%.3f  f1_binary=%.3f  f1_macro=%.3f  (%.1fs)",
-            result.accuracy,
-            result.f1_binary,
-            result.f1_macro,
-            elapsed,
-        )
-
-    return results
+def labelled_counts(dataset: hf_datasets.Dataset, head: int) -> int:
+    """How many rows of a split have an answer for one question."""
+    labels = np.array(dataset["labels"])
+    return int((labels[:, head] != IGNORE_LABEL).sum())
 
 
 CSV_FIELDNAMES = [
     "model_name",
-    "question_index",
+    "head",
     "question_text",
     "n_train",
     "n_test",
@@ -396,7 +345,7 @@ def append_result_csv(result: ModelResult, output_path: Path) -> None:
         writer.writerow(
             {
                 "model_name": result.model_name,
-                "question_index": result.question_label,
+                "head": result.head,
                 "question_text": result.question,
                 "n_train": result.n_train,
                 "n_test": result.n_test,
@@ -410,18 +359,25 @@ def append_result_csv(result: ModelResult, output_path: Path) -> None:
         )
 
 
-def build_one_question_answerer(question: str) -> None:
+def train_answerer(
+    questions: list[str] | None = None,
+    epochs: int = 3,
+    batch_size: int = 16,
+    lr: float = 2e-5,
+    save_checkpoints: bool = True,
+) -> None:
+    """Train one model to answer every one of `questions`, defaulting to every
+    question the labelled data has answers for.
 
+    The trained model replaces whatever is already on disk, and its heads are
+    recorded in the model map, so the questions become available to
+    PastelLocal; nothing else needs updating. Its holdout metrics go to
+    results.csv and the log.
+    """
     input_path = LABELLED_DATA_PATH
-    # Train into the same directory inference reads from, wherever that is.
-    output_dir = models_dir()
-    epochs = 3
-    batch_size = 16
-    lr = 2e-5
-    save_checkpoints = True
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    setup_logging(output_dir)
+    models_dir().mkdir(parents=True, exist_ok=True)
+    setup_logging(models_dir())
 
     if not input_path.exists():
         logger.error("Input file not found: %s", input_path)
@@ -433,23 +389,74 @@ def build_one_question_answerer(question: str) -> None:
         os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
 
     records = load_labelled_data(input_path)
-    question_dataset = build_question_dataset(records, question)
+    in_head_order = questions_in_head_order(
+        questions_in(records) if questions is None else questions
+    )
+    dataset = build_dataset(records, in_head_order)
 
-    csv_path = output_dir / "results.csv"
+    base_model_id = MODELS[MODEL_CATEGORY]
+    tokenizer = AutoTokenizer.from_pretrained(base_model_id)
+    # One split over sentences: every head is trained and evaluated on the same
+    # sentences, so a sentence cannot be in one head's training set and another
+    # head's holdout.
+    split = tokenise_dataset(dataset, tokenizer).train_test_split(
+        test_size=TEST_FRACTION, seed=RANDOM_SEED
+    )
+    train_ds, test_ds = split["train"], split["test"]
+    logger.info(
+        "%d question(s) over %d sentences (train=%d, test=%d)",
+        len(in_head_order),
+        len(dataset.sentences),
+        len(train_ds),
+        len(test_ds),
+    )
+
+    csv_path = models_dir() / "results.csv"
     init_results_csv(csv_path)
 
-    _ = train_one_model(
-        question_dataset=question_dataset,
-        output_dir=output_dir,
+    metrics, elapsed = finetune_multi_head(
+        base_model_id=base_model_id,
+        questions=in_head_order,
+        train_ds=train_ds,
+        test_ds=test_ds,
+        output_dir=model_dir(),
         epochs=epochs,
         batch_size=batch_size,
         lr=lr,
         save_checkpoints=save_checkpoints,
-        csv_path=csv_path,
+    )
+
+    for head, question in enumerate(in_head_order):
+        result = ModelResult(
+            model_name=MODEL_CATEGORY,
+            question=question,
+            head=head,
+            n_train=labelled_counts(train_ds, head),
+            n_test=labelled_counts(test_ds, head),
+            accuracy=metrics.get(f"q{head:02d}_accuracy", float("nan")),
+            f1_binary=metrics.get(f"q{head:02d}_f1_binary", float("nan")),
+            f1_macro=metrics.get(f"q{head:02d}_f1_macro", float("nan")),
+            precision=metrics.get(f"q{head:02d}_precision", float("nan")),
+            recall=metrics.get(f"q{head:02d}_recall", float("nan")),
+            train_seconds=elapsed,
+        )
+        append_result_csv(result, csv_path)
+        logger.info(
+            "  head %02d  accuracy=%.3f  f1_binary=%.3f  f1_macro=%.3f  %s",
+            head,
+            result.accuracy,
+            result.f1_binary,
+            result.f1_macro,
+            question[:50],
+        )
+
+    logger.info(
+        "Trained %d head(s) in %.1fs, mean f1_binary=%.3f",
+        len(in_head_order),
+        elapsed,
+        metrics.get("mean_f1_binary", float("nan")),
     )
 
 
 if __name__ == "__main__":
-    # main()
-    new_question = "Is this sentence a joke or satirical?"
-    build_one_question_answerer(new_question)
+    train_answerer()

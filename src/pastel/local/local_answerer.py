@@ -1,18 +1,26 @@
-# Uses local, pre-trained encoder models to answer questions about sentences.
+# Uses a local, fine-tuned encoder model to answer questions about sentences.
 
 import logging
+import os
 from typing import Any
 
 from pastel.local.model_registry import (
     MODEL_CATEGORY,
     MODELS,
     available_questions,
+    head_for_question,
     latest_checkpoint,
-    model_id_for_question,
 )
 
 MAX_LENGTH = 128
 BATCH_SIZE = 32
+
+# Set this to quantize the model to int8 as it is loaded. Worth roughly 20% of
+# inference time on a CPU with no GPU, at a fraction of the memory - but it
+# changes the numerics, so it is off unless asked for and the holdout
+# evaluation should be re-run before a model is trusted with it on.
+QUANTISE_ENV_VAR = "PASTEL_LOCAL_QUANTISE"
+QUANTISE_ON = ("1", "true", "yes", "on")
 
 # Answering questions locally needs transformers and torch, which are an
 # optional extra so that Gemini-only users don't have to install them.
@@ -24,17 +32,9 @@ MISSING_DEPENDENCIES_HINT = (
 
 _logger = logging.getLogger(__name__)
 
-# One (model, tokenizer) pair per model id, e.g. "q03". Loading a model takes
-# seconds, so they are kept for the process lifetime once loaded.
-_model_cache: dict[str, tuple[Any, Any]] = {}
-
-
-def _import_transformers() -> Any:
-    try:
-        import transformers
-    except ImportError as exc:
-        raise ImportError(MISSING_DEPENDENCIES_HINT) from exc
-    return transformers
+# One model answers every question, so there is a single (model, tokenizer)
+# pair. Loading it takes seconds, so it is kept for the process lifetime.
+_loaded: tuple[Any, Any] | None = None
 
 
 def _import_torch() -> Any:
@@ -45,53 +45,114 @@ def _import_torch() -> Any:
     return torch
 
 
-def _load_model(question: str) -> tuple[Any, Any]:
-    """Load the latest checkpoint of the model fine-tuned for `question`."""
-    transformers = _import_transformers()
+def _quantise(model: Any) -> Any:
+    """The model with its linear layers quantised to int8, if
+    PASTEL_LOCAL_QUANTISE asks for it. Otherwise the model unchanged."""
+    if os.environ.get(QUANTISE_ENV_VAR, "").lower() not in QUANTISE_ON:
+        return model
 
-    checkpoint = latest_checkpoint(question)
+    try:
+        from torchao.quantization import (
+            Int8DynamicActivationInt8WeightConfig,
+            quantize_,
+        )
+    except ImportError as exc:
+        raise ImportError(
+            f"{QUANTISE_ENV_VAR} needs torchao, one of the optional inference "
+            "dependencies. Install them with `uv sync --extra local`, or unset "
+            f"{QUANTISE_ENV_VAR}."
+        ) from exc
+
+    _logger.info("Quantising the model's linear layers to int8")
+    quantize_(model, Int8DynamicActivationInt8WeightConfig())  # in place
+    return model
+
+
+def _load_model() -> tuple[Any, Any]:
+    """Load the latest checkpoint of the fine-tuned model."""
+    try:
+        import transformers
+
+        from pastel.local.multi_head_encoder import MultiHeadEncoder
+    except ImportError as exc:
+        raise ImportError(MISSING_DEPENDENCIES_HINT) from exc
+
+    checkpoint = latest_checkpoint()
     _logger.info("Loading model from %s", checkpoint)
 
     base_model_id = MODELS[MODEL_CATEGORY]
     tokenizer = transformers.AutoTokenizer.from_pretrained(base_model_id)
-    model = transformers.AutoModelForSequenceClassification.from_pretrained(
-        str(checkpoint)
-    )
-    model.eval()
-    return model, tokenizer
+    model = MultiHeadEncoder.from_checkpoint(checkpoint, base_model_id)
+    return _quantise(model), tokenizer
 
 
-def _cached_model(question: str) -> tuple[Any, Any]:
-    """The (model, tokenizer) pair that answers `question`, loading it once."""
-    model_id = model_id_for_question(question)
-    if model_id not in _model_cache:
-        _model_cache[model_id] = _load_model(question)
-    return _model_cache[model_id]
+def _cached_model() -> tuple[Any, Any]:
+    """The (model, tokenizer) pair that answers every question, loaded once."""
+    global _loaded
+    if _loaded is None:
+        _loaded = _load_model()
+    return _loaded
+
+
+def _heads_for(questions: list[str], model: Any) -> list[int]:
+    """The head that answers each question, checking the trained model really
+    has it. A map listing questions the model was not trained for would
+    otherwise be answered by whatever head happens to sit at that index."""
+    heads = [head_for_question(question) for question in questions]
+    untrained = [
+        question for question, head in zip(questions, heads) if head >= model.n_heads
+    ]
+    if untrained:
+        raise ValueError(
+            f"The trained model has {model.n_heads} head(s), too few to answer: "
+            + "; ".join(untrained)
+            + ". One model answers every question, so they have to be "
+            "retrained together with local_models.finetune_encoder."
+        )
+    return heads
 
 
 def preload_models(questions: list[str] | None = None) -> None:
-    """Load models into the cache up front, so the first call to
-    answer_question() doesn't pay for it. Defaults to every available question."""
-    for question in available_questions() if questions is None else questions:
-        _cached_model(question)
+    """Load the model into the cache up front, so the first call to
+    answer_questions() doesn't pay for it. Also checks the model has a head for
+    each question, rather than failing part-way through a batch. Defaults to
+    every available question."""
+    model, _ = _cached_model()
+    _heads_for(available_questions() if questions is None else questions, model)
 
 
-def answer_question(question: str, sentences: list[str]) -> list[float]:
+def answer_questions(
+    questions: list[str], sentences: list[str]
+) -> dict[str, list[float]]:
     """
-    Answers the question for the given list of sentences.
-    Returns one score per sentence, in the same order as the input.
+    Answers every question for every sentence.
+    Returns one score per sentence for each question, in the same order as the
+    input sentences.
+
+    One pass of the shared encoder answers every question at once, so asking
+    all of them together costs little more than asking one.
     """
     torch = _import_torch()
 
-    model, tokenizer = _cached_model(question)
+    model, tokenizer = _cached_model()
+    heads = _heads_for(questions, model)
 
-    input_text = [question + " " + sentence for sentence in sentences]
+    answers = {question: [0.0] * len(sentences) for question in questions}
 
-    answers: list[float] = []
-    for start in range(0, len(input_text), BATCH_SIZE):
-        batch = input_text[start : start + BATCH_SIZE]
+    # The sentence is the whole input. Each head answers one fixed question, so
+    # prefixing the question text would spend a large part of every forward
+    # pass on a constant carrying no information.
+    #
+    # Every batch is padded to its longest member, so batching sentences in
+    # file order makes short sentences pay for long ones. Grouping sentences of
+    # similar length together cuts that waste; the answers are written back
+    # into the caller's order.
+    by_length = sorted(range(len(sentences)), key=lambda i: len(sentences[i]))
+
+    for start in range(0, len(by_length), BATCH_SIZE):
+        indices = by_length[start : start + BATCH_SIZE]
         inputs = tokenizer(
-            batch,
+            [sentences[i] for i in indices],
             truncation=True,
             padding=True,
             max_length=MAX_LENGTH,
@@ -99,11 +160,26 @@ def answer_question(question: str, sentences: list[str]) -> list[float]:
         )
 
         with torch.no_grad():
-            logits = model(**inputs).logits
+            # (sentences, heads, classes)
+            logits = model.head_logits(inputs["input_ids"], inputs["attention_mask"])
 
-        answers.extend(torch.argmax(logits, dim=-1).float().tolist())
+        predictions = torch.argmax(logits, dim=-1).float().tolist()
+        for row, index in enumerate(indices):
+            for question, head in zip(questions, heads):
+                answers[question][index] = predictions[row][head]
 
     return answers
+
+
+def answer_question(question: str, sentences: list[str]) -> list[float]:
+    """
+    Answers the question for the given list of sentences.
+    Returns one score per sentence, in the same order as the input.
+
+    Answering several questions costs barely more than answering one, so prefer
+    answer_questions() when you want more than this.
+    """
+    return answer_questions([question], sentences)[question]
 
 
 if __name__ == "__main__":
@@ -115,7 +191,7 @@ if __name__ == "__main__":
         "Scientists have shown that tamoxifen patients are more likely to develop deadly blood clots and cancer.",
         "Rubbing olive oil onto a lump under your skin will make it disappear in a few days.",
     ]
-    answers = {question: answer_question(question, sentences) for question in questions}
+    answers = answer_questions(questions, sentences)
 
     for idx, sentence in enumerate(sentences):
         print(f"\n{'*' * 80}\n{sentence}\n")
