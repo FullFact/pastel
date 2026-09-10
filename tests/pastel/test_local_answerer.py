@@ -120,6 +120,29 @@ def test_no_sentences_needs_no_batches(fake_encoder) -> None:
     assert fake_encoder.batches == []
 
 
+def test_quantisation_is_off_unless_asked_for(monkeypatch) -> None:
+    """It changes the numerics, so a model is only quantised on request."""
+    monkeypatch.delenv(local_answerer.QUANTISE_ENV_VAR, raising=False)
+    model = torch.nn.Sequential(torch.nn.Linear(64, 2)).eval()
+
+    assert local_answerer._quantise(model) is model
+    assert type(model[0].weight) is torch.nn.Parameter
+
+
+def test_quantisation_replaces_the_linear_weights(monkeypatch) -> None:
+    monkeypatch.setenv(local_answerer.QUANTISE_ENV_VAR, "1")
+    model = torch.nn.Sequential(torch.nn.Linear(64, 2)).eval()
+    sentences = torch.randn(3, 64)
+    before = model(sentences)
+
+    # torchao quantises in place, so the model itself comes back
+    quantised = local_answerer._quantise(model)
+
+    assert quantised is model
+    assert type(model[0].weight) is not torch.nn.Parameter
+    assert torch.allclose(quantised(sentences), before, atol=0.1)
+
+
 def test_a_head_the_model_does_not_have_is_rejected(fake_encoder, monkeypatch) -> None:
     """A model map recording more questions than the model was trained for
     would otherwise be answered by whatever head sits at that index."""

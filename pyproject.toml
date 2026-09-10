@@ -30,6 +30,7 @@ local = [
     "transformers>=4.40",
     "torch>=2.10.0",
     "sentencepiece>=0.2.1",
+    "torchao>=0.16.0",
 ]
 
 [tool.uv.sources]

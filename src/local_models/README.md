@@ -83,6 +83,10 @@ When all new questions have been set up, a new Pastel model can be trained with 
 
 After training, `pastel/local/local_answerer.py` uses the fine-tuned model to label new sentences. `answer_questions()` answers every question in one pass of the encoder, so asking all of them costs little more than asking one; `answer_question()` is the single-question form of it. `PastelLocal.preload()` loads the encoder up front, which is worth doing before a long batch run or before timing anything — it also surfaces a missing model, or a question the model has no head for, straight away rather than part-way through a batch.
 
+### Quantising the model
+
+Setting `PASTEL_LOCAL_QUANTISE=1` quantises the model's linear layers to int8 as it is loaded, which is worth roughly 20% of inference time on a CPU with no GPU. It changes the numerics, so it is off by default — re-run the holdout evaluation before trusting a model with it on. It uses [torchao](https://github.com/pytorch/ao), which comes with the `local` extra.
+
 # Known issues!
 
 * The trained local model will need to be stored in a bucket and downloaded as required. Until then, `PASTEL_LOCAL_MODELS_DIR` has to point at a directory that already holds it.
@@ -90,3 +94,5 @@ After training, `pastel/local/local_answerer.py` uses the fine-tuned model to la
 * Evaluation of the individual heads and the combined Pastel model.
 
 * `_load_model` never places the model on a GPU, so inference is CPU-only whatever hardware it runs on.
+
+* Exporting to ONNX Runtime or OpenVINO would probably beat `PASTEL_LOCAL_QUANTISE` on CPU — neither has been measured.

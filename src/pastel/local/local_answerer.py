@@ -1,6 +1,7 @@
 # Uses a local, fine-tuned encoder model to answer questions about sentences.
 
 import logging
+import os
 from typing import Any
 
 from pastel.local.model_registry import (
@@ -13,6 +14,13 @@ from pastel.local.model_registry import (
 
 MAX_LENGTH = 128
 BATCH_SIZE = 32
+
+# Set this to quantize the model to int8 as it is loaded. Worth roughly 20% of
+# inference time on a CPU with no GPU, at a fraction of the memory - but it
+# changes the numerics, so it is off unless asked for and the holdout
+# evaluation should be re-run before a model is trusted with it on.
+QUANTISE_ENV_VAR = "PASTEL_LOCAL_QUANTISE"
+QUANTISE_ON = ("1", "true", "yes", "on")
 
 # Answering questions locally needs transformers and torch, which are an
 # optional extra so that Gemini-only users don't have to install them.
@@ -37,6 +45,29 @@ def _import_torch() -> Any:
     return torch
 
 
+def _quantise(model: Any) -> Any:
+    """The model with its linear layers quantised to int8, if
+    PASTEL_LOCAL_QUANTISE asks for it. Otherwise the model unchanged."""
+    if os.environ.get(QUANTISE_ENV_VAR, "").lower() not in QUANTISE_ON:
+        return model
+
+    try:
+        from torchao.quantization import (
+            Int8DynamicActivationInt8WeightConfig,
+            quantize_,
+        )
+    except ImportError as exc:
+        raise ImportError(
+            f"{QUANTISE_ENV_VAR} needs torchao, one of the optional inference "
+            "dependencies. Install them with `uv sync --extra local`, or unset "
+            f"{QUANTISE_ENV_VAR}."
+        ) from exc
+
+    _logger.info("Quantising the model's linear layers to int8")
+    quantize_(model, Int8DynamicActivationInt8WeightConfig())  # in place
+    return model
+
+
 def _load_model() -> tuple[Any, Any]:
     """Load the latest checkpoint of the fine-tuned model."""
     try:
@@ -52,7 +83,7 @@ def _load_model() -> tuple[Any, Any]:
     base_model_id = MODELS[MODEL_CATEGORY]
     tokenizer = transformers.AutoTokenizer.from_pretrained(base_model_id)
     model = MultiHeadEncoder.from_checkpoint(checkpoint, base_model_id)
-    return model, tokenizer
+    return _quantise(model), tokenizer
 
 
 def _cached_model() -> tuple[Any, Any]:
