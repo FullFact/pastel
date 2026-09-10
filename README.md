@@ -66,7 +66,9 @@ Using the Gemini backend needs nothing beyond the base install. The local backen
 uv sync --extra local
 ```
 
-and it needs to be able to find the fine-tuned models — set `PASTEL_LOCAL_MODELS_DIR` unless you are running from the repo root with the models under `data/local_models/models`.
+PASTEL always runs the local models on CPU, so we install the CPU version of torch.
+
+It also needs to be able to find the fine-tuned models — set `PASTEL_LOCAL_MODELS_DIR` unless you are running from the repo root with the models under `data/local_models/models`.
 
 ### Billing labels
 

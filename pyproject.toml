@@ -35,6 +35,18 @@ local = [
 
 [tool.uv.sources]
 genai_utils = { git = "https://github.com/FullFact/genai-utils.git", tag = "5.6.0"}
+# PASTEL only ever runs the local models on CPU, so pull torch from PyTorch's
+# CPU-only index rather than PyPI (whose Linux/Windows wheels drag in ~3GB of
+# CUDA/NVIDIA and Triton libraries we never use). macOS wheels on PyPI are
+# already CPU/MPS-only and the CPU index has none, so darwin is excluded.
+torch = [{ index = "pytorch-cpu", marker = "sys_platform != 'darwin'" }]
+
+# `explicit = true` means this index is *only* consulted for the packages
+# pinned to it above; everything else still resolves from PyPI.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [build-system]
 requires = ["setuptools >= 61.0",
