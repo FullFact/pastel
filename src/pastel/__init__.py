@@ -1,15 +1,10 @@
 """Pastel: score a piece of text by asking a fixed list of yes/no questions
 about it and combining the answers with a set of learned weights.
 
-Two backends answer those questions and are otherwise interchangeable:
-
-* `PastelGemini` sends the questions to Gemini in a single prompt per sentence.
-* `PastelLocal` uses one locally fine-tuned encoder model per question, and so
-  can only answer questions that have been fine-tuned and recorded in its
-  model map.
-
-Choose one at runtime with `get_backend()` rather than by editing an import,
-so the same code can be run either way.
+Two interchangeable backends answer those questions: `PastelGemini` sends them
+to Gemini in one prompt per sentence; `PastelLocal` uses a locally fine-tuned
+encoder, and so can only answer questions it has been trained for. Choose one
+at runtime with `get_backend()` rather than by editing an import.
 """
 
 import os
@@ -38,11 +33,8 @@ __all__ = [
 
 
 def get_backend(name: str | None = None) -> Type[PastelModel]:
-    """Return the Pastel class to use for answering questions.
-
-    `name` is one of the keys of BACKENDS. If it is None, the PASTEL_BACKEND
-    environment variable is used, falling back to DEFAULT_BACKEND.
-    """
+    """The Pastel class to use for answering questions: one of the keys of
+    BACKENDS, or `$PASTEL_BACKEND` falling back to DEFAULT_BACKEND."""
     if name is None:
         name = os.environ.get(BACKEND_ENV_VAR, DEFAULT_BACKEND)
     try:

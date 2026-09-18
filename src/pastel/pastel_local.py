@@ -10,11 +10,10 @@ from pastel.pastel import PastelModel
 class PastelLocal(PastelModel):
     """Answers the model's questions with the locally fine-tuned encoder.
 
-    One fine-tuned model answers every question, with a head per question, so
-    this backend can only answer questions that have been trained and recorded
-    in the model map - which is what
-    `pastel.local.model_registry.available_questions()` reports. The questions
-    themselves belong to the downstream task, not to this library.
+    One model answers every question, with a head per question, so this
+    backend can only answer questions that have been trained and recorded in
+    the model map - which is what `pastel.local.available_questions()` reports.
+    The questions themselves belong to the downstream task, not the library.
     """
 
     def __init__(self, model: dict[FEATURE_TYPE, float]) -> None:
@@ -25,7 +24,7 @@ class PastelLocal(PastelModel):
             raise ValueError(
                 "PastelLocal has no fine-tuned model for the following question(s): "
                 + "; ".join(unsupported)
-                + ". Train one with local_models.finetune_encoder, or run "
+                + ". Train one with pastel.local.training, or run "
                 "`python -m pastel.local` to see what is available and where."
             )
 
@@ -33,24 +32,21 @@ class PastelLocal(PastelModel):
     def from_available_questions(
         cls, extra_features: Sequence[FEATURE_TYPE] = ()
     ) -> Self:
-        """A new untrained model over every question that has a trained model
-        on disk, plus any extra features given."""
+        """A new untrained model over every question that has a trained head on
+        disk, plus any extra features given."""
         return cls.from_feature_list([*require_available_questions(), *extra_features])
 
     def preload(self) -> None:
         """Load the fine-tuned model into memory now, rather than on the first
-        call to get_answers_to_questions(). Worth doing before timing anything,
-        or before a long batch run - and it surfaces a missing model up front
-        rather than part-way through a batch."""
+        call to get_answers_to_questions(). Worth doing before a long batch run
+        or before timing anything, and it surfaces a missing model up front."""
         preload_models(self.get_questions())
 
     async def get_answers_to_questions(
         self, sentences: list[Sentence]
     ) -> dict[Sentence, dict[FEATURE_TYPE, float]]:
-        """
-        Get answers for a given list of sentences.
-        For each sentence, this Returns a dictionary mapping features to scores.
-        """
+        """Answers for a given list of sentences, as a dict of features to
+        scores per sentence."""
         if not sentences:
             return {}
 
@@ -58,20 +54,20 @@ class PastelLocal(PastelModel):
             sentence: {} for sentence in sentences
         }
 
-        # One pass of the shared encoder answers every question, so they all
-        # go together. Inference is synchronous and CPU/GPU-bound, so keep it
-        # off the event loop.
-        sentence_texts = [sentence.sentence_text for sentence in sentences]
+        # One pass of the shared encoder answers every question, so they all go
+        # together. Inference is synchronous and CPU-bound, so keep it off the
+        # event loop.
         questions = self.get_questions()
         if questions:
             question_answers = await asyncio.to_thread(
-                answer_questions, questions, sentence_texts
+                answer_questions,
+                questions,
+                [sentence.sentence_text for sentence in sentences],
             )
             for question, scores in question_answers.items():
                 for sentence, answer in zip(sentences, scores):
                     answers[sentence][question] = answer
 
-        # Then get values from the functions
         for sentence in sentences:
             answers[sentence] |= self._get_function_answers_for_single_sentence(
                 sentence

@@ -1,4 +1,4 @@
-# Uses a local, fine-tuned encoder model to answer questions about sentences.
+"""Answer questions about sentences with the locally fine-tuned encoder."""
 
 import logging
 import os
@@ -15,15 +15,13 @@ from pastel.local.model_registry import (
 MAX_LENGTH = 128
 BATCH_SIZE = 32
 
-# Set this to quantize the model to int8 as it is loaded. Worth roughly 20% of
-# inference time on a CPU with no GPU, at a fraction of the memory - but it
-# changes the numerics, so it is off unless asked for and the holdout
-# evaluation should be re-run before a model is trusted with it on.
+# Quantise the model to int8 as it loads: worth roughly 20% of inference time
+# on a CPU, at a fraction of the memory. It changes the numerics, so it is off
+# unless asked for, and the holdout evaluation should be re-run before a model
+# is trusted with it on.
 QUANTISE_ENV_VAR = "PASTEL_LOCAL_QUANTISE"
 QUANTISE_ON = ("1", "true", "yes", "on")
 
-# Answering questions locally needs transformers and torch, which are an
-# optional extra so that Gemini-only users don't have to install them.
 MISSING_DEPENDENCIES_HINT = (
     "Answering Pastel questions locally needs the optional inference "
     "dependencies (transformers and torch). Install them with "
@@ -32,8 +30,8 @@ MISSING_DEPENDENCIES_HINT = (
 
 _logger = logging.getLogger(__name__)
 
-# One model answers every question, so there is a single (model, tokenizer)
-# pair. Loading it takes seconds, so it is kept for the process lifetime.
+# One model answers every question, and loading it takes seconds, so the
+# (model, tokenizer) pair is kept for the process lifetime.
 _loaded: tuple[Any, Any] | None = None
 
 
@@ -47,7 +45,7 @@ def _import_torch() -> Any:
 
 def _quantise(model: Any) -> Any:
     """The model with its linear layers quantised to int8, if
-    PASTEL_LOCAL_QUANTISE asks for it. Otherwise the model unchanged."""
+    PASTEL_LOCAL_QUANTISE asks for it."""
     if os.environ.get(QUANTISE_ENV_VAR, "").lower() not in QUANTISE_ON:
         return model
 
@@ -97,7 +95,7 @@ def _cached_model() -> tuple[Any, Any]:
 def _heads_for(questions: list[str], model: Any) -> list[int]:
     """The head that answers each question, checking the trained model really
     has it. A map listing questions the model was not trained for would
-    otherwise be answered by whatever head happens to sit at that index."""
+    otherwise be answered by whatever head sits at that index."""
     heads = [head_for_question(question) for question in questions]
     untrained = [
         question for question, head in zip(questions, heads) if head >= model.n_heads
@@ -107,16 +105,15 @@ def _heads_for(questions: list[str], model: Any) -> list[int]:
             f"The trained model has {model.n_heads} head(s), too few to answer: "
             + "; ".join(untrained)
             + ". One model answers every question, so they have to be "
-            "retrained together with local_models.finetune_encoder."
+            "retrained together."
         )
     return heads
 
 
 def preload_models(questions: list[str] | None = None) -> None:
-    """Load the model into the cache up front, so the first call to
-    answer_questions() doesn't pay for it. Also checks the model has a head for
-    each question, rather than failing part-way through a batch. Defaults to
-    every available question."""
+    """Load the model now, so the first call to answer_questions() doesn't pay
+    for it, and check it has a head for each question rather than failing
+    part-way through a batch. Defaults to every available question."""
     model, _ = _cached_model()
     _heads_for(available_questions() if questions is None else questions, model)
 
@@ -124,13 +121,11 @@ def preload_models(questions: list[str] | None = None) -> None:
 def answer_questions(
     questions: list[str], sentences: list[str]
 ) -> dict[str, list[float]]:
-    """
-    Answers every question for every sentence.
-    Returns one score per sentence for each question, in the same order as the
-    input sentences.
+    """Answer every question for every sentence, one score per sentence per
+    question in the order the sentences were given.
 
-    One pass of the shared encoder answers every question at once, so asking
-    all of them together costs little more than asking one.
+    One pass of the shared encoder answers every question, so asking all of
+    them costs little more than asking one.
     """
     torch = _import_torch()
 
@@ -139,14 +134,13 @@ def answer_questions(
 
     answers = {question: [0.0] * len(sentences) for question in questions}
 
-    # The sentence is the whole input. Each head answers one fixed question, so
+    # The sentence is the whole input: each head answers one fixed question, so
     # prefixing the question text would spend a large part of every forward
-    # pass on a constant carrying no information.
+    # pass on a constant.
     #
-    # Every batch is padded to its longest member, so batching sentences in
-    # file order makes short sentences pay for long ones. Grouping sentences of
-    # similar length together cuts that waste; the answers are written back
-    # into the caller's order.
+    # Every batch is padded to its longest member, so batching in file order
+    # makes short sentences pay for long ones. Grouping by length cuts that
+    # waste; the answers are written back into the caller's order.
     by_length = sorted(range(len(sentences)), key=lambda i: len(sentences[i]))
 
     for start in range(0, len(by_length), BATCH_SIZE):
@@ -172,28 +166,6 @@ def answer_questions(
 
 
 def answer_question(question: str, sentences: list[str]) -> list[float]:
-    """
-    Answers the question for the given list of sentences.
-    Returns one score per sentence, in the same order as the input.
-
-    Answering several questions costs barely more than answering one, so prefer
-    answer_questions() when you want more than this.
-    """
+    """Answer one question for a list of sentences. Answering several costs
+    barely more, so prefer answer_questions() for more than one."""
     return answer_questions([question], sentences)[question]
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-
-    questions = available_questions()
-    preload_models(questions)
-    sentences = [
-        "Scientists have shown that tamoxifen patients are more likely to develop deadly blood clots and cancer.",
-        "Rubbing olive oil onto a lump under your skin will make it disappear in a few days.",
-    ]
-    answers = answer_questions(questions, sentences)
-
-    for idx, sentence in enumerate(sentences):
-        print(f"\n{'*' * 80}\n{sentence}\n")
-        for question in questions:
-            print(f"{question[:60]:60s}  {answers[question][idx]}")

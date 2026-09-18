@@ -1,14 +1,11 @@
-"""Answering Pastel questions with locally fine-tuned encoder models.
+"""Answering Pastel questions with a locally fine-tuned encoder.
 
-One encoder is fine-tuned to answer every question, with a small
-classification head per question, so this side of the library is only the
-*inference* half: the registry saying which head answers which question, and
-loading the model to run it. Training it lives outside the library, in
-`local_models`.
+One encoder answers every question, with a classification head per question.
+`model_registry` records which head answers which; `local_answerer` loads the
+model and runs it; `training` fine-tunes a new one.
 
-Needs the optional inference dependencies:
-
-    uv sync --extra local
+Needs the optional dependencies: `uv sync --extra local` to use a model,
+`--extra train` to train one.
 """
 
 from pastel.local.local_answerer import (
@@ -21,6 +18,7 @@ from pastel.local.model_registry import (
     has_model,
     head_for_question,
     models_dir,
+    record_heads,
     require_available_questions,
 )
 
@@ -32,5 +30,6 @@ __all__ = [
     "head_for_question",
     "models_dir",
     "preload_models",
+    "record_heads",
     "require_available_questions",
 ]

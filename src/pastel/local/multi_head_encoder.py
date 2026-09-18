@@ -1,17 +1,14 @@
 """One shared encoder body with a binary classification head per question.
 
-Every question asks about the same sentence, so nine separately fine-tuned
-encoders spent nine forward passes - and nine copies of a 307M-parameter body -
-producing nine yes/no answers. One body with one small head per question
-answers all of them in a single pass, for a ninth of the memory.
-
-The cost is that the questions are no longer independent: the body is shared,
-so adding or changing a question means retraining all of them together.
+Every question asks about the same sentence, so one body with a small head per
+question answers all of them in a single pass, for a fraction of the memory of
+one fine-tuned encoder per question. The cost is that the body is shared, so
+adding or changing a question means retraining all of them together.
 
 Unlike the rest of `pastel.local`, this module imports torch and transformers
 at module scope - it cannot define a torch module otherwise. They are an
-optional extra, so import this module from inside a function rather than at the
-top of one that Gemini-only installs also import.
+optional extra, so import it from inside a function rather than at the top of
+one that Gemini-only installs also import.
 """
 
 from pathlib import Path
@@ -24,9 +21,9 @@ from transformers import AutoConfig, AutoModel
 
 N_CLASSES = 2  # every question is answered yes or no
 
-# Marks "this sentence has no answer for this question" in a label vector. A
-# sentence labelled for only some questions still trains the heads it does have
-# answers for. -100 is torch's own default ignore_index.
+# Marks "this sentence has no answer for this question" in a label vector, so a
+# partly-labelled sentence still trains the heads it does have answers for.
+# -100 is torch's own default ignore_index.
 IGNORE_LABEL = -100
 
 # What transformers' Trainer names the weights it saves for a plain nn.Module.
@@ -37,8 +34,7 @@ HEAD_PREFIX = "heads."
 
 def _classification_head(hidden_size: int) -> nn.Module:
     """One question's head, mirroring the shape of the base model's own
-    classification head so that a shared body starts from what already worked
-    when each question had a whole model to itself."""
+    classification head."""
     return nn.Sequential(
         nn.Linear(hidden_size, hidden_size),
         nn.GELU(),
@@ -76,11 +72,11 @@ class MultiHeadEncoder(nn.Module):
     ) -> "MultiHeadEncoder":
         """A fine-tuned model, in evaluation mode. The body's shape comes from
         the base model's config and every weight from the checkpoint, so this
-        does not download the base model's weights only to overwrite them.
+        does not download the base weights only to overwrite them.
 
-        How many heads the checkpoint has is read from the checkpoint itself
-        rather than from the model map, so that a map listing questions the
-        model was not trained for fails where it can be explained.
+        The head count is read from the checkpoint rather than the model map,
+        so a map listing questions the model was not trained for fails where it
+        can be explained.
         """
         state = load_file(checkpoint / WEIGHTS_FILENAME)
         n_heads = len(
@@ -108,8 +104,7 @@ class MultiHeadEncoder(nn.Module):
 
     def head_logits(self, input_ids: Any, attention_mask: Any) -> torch.Tensor:
         """Every head's logits for every sentence, shaped
-        (sentences, heads, classes). One pass of the body answers every
-        question; the heads themselves are too small to be worth batching."""
+        (sentences, heads, classes)."""
         pooled = self._pooled(input_ids, attention_mask)
         return torch.stack([head(pooled) for head in self.heads], dim=1)
 

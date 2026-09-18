@@ -65,20 +65,17 @@ def test_a_map_of_per_question_model_ids_is_rejected(models_dir: Path) -> None:
         model_registry.head_for_question(Q1)
 
 
-def test_assign_is_stable_for_the_same_question(models_dir: Path) -> None:
-    first = model_registry.assign_head(Q1)
-    assert model_registry.assign_head(Q1) == first
-
-
-def test_assign_starts_from_zero_and_records_the_head(models_dir: Path) -> None:
-    assert model_registry.assign_head(Q1) == 0
-    assert model_registry.assign_head(Q2) == 1
+def test_record_heads_numbers_them_in_order(models_dir: Path) -> None:
+    assert model_registry.record_heads([Q1, Q2]) == {Q1: 0, Q2: 1}
     assert model_registry.load_model_map() == {Q1: 0, Q2: 1}
 
 
-def test_assign_does_not_collide_with_recorded_heads(models_dir: Path) -> None:
+def test_record_heads_replaces_rather_than_merges(models_dir: Path) -> None:
+    """A retrain produces a whole new model, so a leftover entry would point at
+    a head trained for something else."""
     write_map(models_dir, {Q2: 4})
-    assert model_registry.assign_head(Q1) == 5
+    model_registry.record_heads([Q1])
+    assert model_registry.load_model_map() == {Q1: 0}
 
 
 def test_models_dir_comes_from_the_environment(tmp_path: Path, monkeypatch) -> None:
@@ -113,11 +110,6 @@ def test_a_question_the_map_does_not_record_is_not_available(models_dir: Path) -
     add_checkpoint(models_dir)
 
     assert model_registry.has_model(Q2) is False
-
-
-def test_head_count_covers_every_recorded_question(models_dir: Path) -> None:
-    write_map(models_dir, {Q1: 0, Q2: 3})
-    assert model_registry.head_count() == 4
 
 
 def test_latest_checkpoint_picks_the_newest(models_dir: Path) -> None:

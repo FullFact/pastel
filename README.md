@@ -1,17 +1,29 @@
 # PASTEL
 
-This is a concept from Sheffield University[1], where the prompt consists of a series of yes/no questions. The answers to these questions, in the context of a piece of text, are then combined into a single score using a linear regression model. 
+A concept from Sheffield University[1]: ask a fixed list of yes/no questions
+about a piece of text, then combine the answers into a single score with a
+linear regression model.
 
-At Full Fact, this approach is used to help identify claims that are worth bringing to the attention of professional fact checkers. That model includes questions such as "Could believing this claim harm someone's health?" and "Is this sentence likely to be believed by many people?".
+At Full Fact this identifies claims worth bringing to professional fact
+checkers, with questions such as "Could believing this claim harm someone's
+health?". The same approach could score text for propaganda, bias or
+reliability — the library declares no questions of its own.
 
-### Code overview
+## Code overview
 
-The `pastel/pastel.py` module defines `PastelModel`: the features-to-weights model itself, saving and loading it, and turning a set of answers into a single score. It is abstract - answering the questions is left to a backend, which is the only part that differs between them:
+`pastel/pastel.py` defines `PastelModel`: the features-to-weights model itself,
+saving and loading it, and turning answers into a score. It is abstract —
+answering the questions is left to a backend:
 
-* `pastel/pastel_gemini.py` — `PastelGemini` sends all of a model's questions to Gemini in one prompt per sentence.
-* `pastel/pastel_local.py` — `PastelLocal` answers every question with one locally fine-tuned encoder, which has a classification head per question and so answers them all in a single pass per sentence. `pastel/local/` holds the model registry and the loading code; training the model lives in `local_models/` (see its README) and is not part of the installable library.
+* `PastelGemini` sends all of a model's questions to Gemini in one prompt per
+  sentence.
+* `PastelLocal` answers every question with one locally fine-tuned encoder,
+  which has a classification head per question and so answers them all in a
+  single pass. `pastel/local/` holds the registry, the loading code and the
+  fine-tuning.
 
-Both are drop-in replacements for each other, so pick one at runtime with `pastel.get_backend()` rather than by changing imports:
+They are drop-in replacements, so pick one at runtime rather than by changing
+imports:
 
 ```python
 from pastel import get_backend
@@ -19,76 +31,117 @@ from pastel import get_backend
 pastel = get_backend("local").load_model("my_model.json")   # or "gemini"
 ```
 
-With no argument, `get_backend()` reads the `PASTEL_BACKEND` environment variable and falls back to Gemini. Each demo script in `scripts/` takes the same choice as a `--backend` flag.
+With no argument, `get_backend()` reads `$PASTEL_BACKEND` and falls back to
+Gemini. Each demo script in `scripts/` takes the same choice as `--backend`.
 
-`PastelGemini` also takes optional Vertex billing `labels`, attached to every Gemini call it makes so its spend can be separated out in Google Cloud billing. They are threaded through `from_dict`, `load_model` and `from_feature_list`, and survive the model copying that training does.
+`pastel/optimise_weights.py` fits the regression weights from a list of
+sentences with checkworthy scores.
 
-The `pastel/optimise_weights.py` module calculates the parameters of the regression model, and requires a list of sentences with associated checkworthy scores.
+`training/cached_pastel.py` wraps any backend and caches its responses in a
+local SQLite database, which saves a lot of time when re-analysing the same
+sentences while experimenting. It is no use in production, where each sentence
+is seen once. `training/crossvalidate_pastel.py` and `training/beam_search.py`
+compare large numbers of candidate models to find a good combination of
+questions; `beam_search` is heuristic and much faster. `data/sample_responses.db`
+is a sample cache to initialise the `DatabaseManager` with.
 
-Currently, this is used by the genai-checkworthy repo but in the future, the same approach might be used to analyse text for other features such as propaganda, bias, reliability etc.
+### Pastel functions and claim types
 
-`training/cached_pastel.py` wraps any backend and uses a local SQLite database to cache its responses. This saves a lot of time and effort when re-analysing the same sentences over and over again, so is useful for experimenting with/optimising Pastel models, but should not be used in production. (It won't help there anyway, as each sentence is only ever seen once.) Similarly, `training/crossvalidate_pastel.py` and `training/beam_search.py` are scripts to compare a large number of Pastel models (potentially millions!) to help find a good combination of questions. `beam_search` uses heuristics and is a lot faster. There is a sample database of cached answers in `data/sample_responses.db` that can be used to initialise the DatabaseManager.
-
-### Upgrading from 1.x
-
-Splitting the backends renamed the class that used to do everything, so `Pastel`
-no longer exists. `PastelModel` is the abstract base; pick the backend you want:
-
-| 1.x | 2.x |
-| --- | --- |
-| `from pastel.pastel import Pastel` | `from pastel import PastelGemini` (or `get_backend()`) |
-| `Pastel(model, labels)` | `PastelGemini(model, labels)` |
-| `Pastel.from_dict(d, labels)` | `PastelGemini.from_dict(d, labels)` |
-| `Pastel.load_model(path, labels)` | `PastelGemini.load_model(path, labels)` |
-| `Pastel.from_feature_list(features, labels)` | `PastelGemini.from_feature_list(features, labels)` |
-| `pastel.make_prompt(sentence)` | `PastelGemini._make_prompt(sentence)` — Gemini-specific, now internal |
-
-Everything else keeps its name and signature, `labels` included: `make_predictions`,
-`update_predictions`, `save_model`, `display_model`, `get_questions`,
-`get_functions`, `get_bias`, `quantify_answers`, `get_scores_from_answers`, and
-the `Sentence` / `ScoreAndAnswers` / `BiasType` models. So for Gemini users the
-migration is the import and the class name.
-
-### Pastel Functions and Claim Types
-
-The `pastel_functions` module defines a set of functions that return a true/false value for a single sentence. One current use is for claim types with functions such as `is_claim_type_quantity`, which allows Pastel models to give higher (or lower) scores to quantity-type sentences. To make this work, sentences must specify the list of claim types as part of a Sentence class (see `pastel/models.py`). If sentences without claim types are used, then any claim type function in a Pastel model will treat the sentence as NOT having any claim types, which will lead to poor performance. So it's important to only use claim-type functions in Pastel models deployed to platforms that have claim-types added to each sentence.
+`pastel_functions` holds functions returning a true/false value for a single
+sentence, such as `is_claim_type_quantity`, so a model can score quantity-type
+sentences higher or lower. Sentences must carry their claim types on the
+`Sentence` class for these to work: a sentence without them is treated as
+having none, which gives poor scores. Only use claim-type functions in models
+deployed where claim types are available.
 
 ## Setup
 
-If you don't want to manually specify the config of Gemini, you should set the following environment variables:
-* `GEMINI_PROJECT`: the GCP project you want to use Gemini in, e.g. "my-production-project-1"
-* `GEMINI_LOCATION`: the GCP location you want to run Gemini on, e.g. "global"
-* `GEMINI_MODEL`: the Gemini model you wish to use, e.g. "gemini-2.5-flash-lite"
+Set `GEMINI_PROJECT`, `GEMINI_LOCATION` and `GEMINI_MODEL` unless you configure
+Gemini yourself.
 
-Using the Gemini backend needs nothing beyond the base install. The local backend needs `transformers` and `torch`, which are an optional extra:
+The Gemini backend needs nothing beyond the base install. The local backend
+needs `transformers` and `torch`, and fine-tuning also needs `accelerate`:
 
 ```
-uv sync --extra local
+uv sync --extra local     # to answer questions with a fine-tuned model
+uv sync --extra train     # to fine-tune one
 ```
 
-PASTEL always runs the local models on CPU, so we install the CPU version of torch.
+PASTEL runs the local models on CPU, so the CPU build of torch is installed.
 
-It also needs to be able to find the fine-tuned models — set `PASTEL_LOCAL_MODELS_DIR` unless you are running from the repo root with the models under `data/local_models/models`.
+### The local backend
+
+One encoder answers every question, with a head per question. `model_map.json`
+— written by training, read by inference — records which head answers which
+question, and is the only thing that says what the backend can answer.
+
+`PASTEL_LOCAL_MODELS_DIR` sets the directory holding the model, for training
+and inference. It defaults to `data/local_models/models`, which is relative and
+so only resolves from the repo root. The model itself sits under the category
+name, in `multi_head/checkpoint-*`.
+
+```
+python -m pastel.local
+```
+
+reports each recorded question as OK or MISSING and prints where it looked. In
+code, `available_questions()` gives the recorded questions once the model has
+been trained, and `PastelLocal.from_available_questions()` builds a model from
+exactly those.
+
+`PASTEL_LOCAL_QUANTISE=1` quantises the model's linear layers to int8 as it
+loads, worth roughly 20% of inference time on CPU. It changes the numerics, so
+re-run your holdout evaluation before trusting a model with it on.
+
+### Fine-tuning
+
+`pastel.local.training.train_multi_head()` trains one encoder with a head per
+question from labelled sentences, saves it where `PastelLocal` will find it,
+and writes the model map beside it. Gathering, splitting and balancing the
+labels belongs to the downstream task — see genai-checkworthy for an example.
+
+Because the body is shared, a retrain replaces the whole model: adding or
+rewording one question means training all of them again. Sentences need not be
+labelled for every question — an unlabelled answer is masked out of the loss
+for that head only.
+
+The input is the bare sentence. Each head answers one fixed question, so
+prefixing the question text would only spend the forward pass encoding a
+constant. Training and inference must agree on this.
 
 ### Billing labels
 
-`PastelGemini` takes an optional `labels` dict, which is attached to each Gemini call the model makes so its spend can be separated out in Google Cloud billing:
+`PastelGemini` takes an optional `labels` dict, attached to each Gemini call so
+its spend can be separated out in Google Cloud billing:
 
 ```python
 pastel = PastelGemini.from_dict(weights, labels={"task": "checkworthy_pastel"})
 ```
 
-These are merged with any `GENAI_LABEL_*` environment variables that `genai_utils` picks up at import time (e.g. `GENAI_LABEL_SERVICE=claims-analysis-api` gives every call a `service` label), so a per-task label here composes with the service-level one rather than replacing it.
+These merge with any `GENAI_LABEL_*` environment variables `genai_utils` picks
+up, so a per-task label composes with a service-level one. Keys must start with
+a lowercase letter; keys and values may only contain lowercase letters,
+numbers, `-` and `_`, up to 63 characters. `genai_utils` drops an invalid label
+with a warning rather than failing the call, so a typo means untagged spend.
+`PastelLocal` makes no Gemini calls and takes no labels.
 
-Keys must start with a lowercase letter; keys and values can only contain lowercase letters, numbers, `-` and `_`, and must be at most 63 characters. `genai_utils` drops any label that doesn't meet those rules (with a warning) rather than failing the call, so a typo means untagged spend rather than an error.
+## Upgrading from 1.x
 
-`PastelLocal` makes no Gemini calls, so it takes no labels.
+Splitting the backends removed `Pastel`, the class that used to do everything.
+`PastelModel` is now the abstract base; use `PastelGemini` (or `get_backend()`)
+wherever you used `Pastel`, with the same arguments — `from_dict`,
+`load_model`, `from_feature_list` and `labels` are unchanged. `make_prompt` is
+Gemini-specific and now `PastelGemini._make_prompt`. Everything else keeps its
+name and signature.
 
-### A note on data
+## A note on data
 
-An example data file, `data/example_training_data.jsonl` is provided so tests and demos can run.
-Note that this was generated using Gemini and for copyright reasons is not real news media.
-Please provide your own examples.
+`data/example_training_data.jsonl` lets the tests and demos run. It was
+generated with Gemini and is not real news media, for copyright reasons —
+please provide your own examples.
 
-### Citation
-[1] Leite, J. A., Razuvayevskaya, O., Bontcheva, K., & Scarton, C. (2025). [Weakly supervised veracity classification with LLM-predicted credibility signals](https://arxiv.org/abs/2309.07601). EPJ Data Science, 14(1), 16.
+## Citation
+
+[1] Leite, J. A., Razuvayevskaya, O., Bontcheva, K., & Scarton, C. (2025).
+[Weakly supervised veracity classification with LLM-predicted credibility signals](https://arxiv.org/abs/2309.07601).
+EPJ Data Science, 14(1), 16.

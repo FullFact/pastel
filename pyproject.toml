@@ -24,13 +24,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Answering questions locally with the fine-tuned encoder models (PastelLocal).
+# Answering questions locally with the fine-tuned encoder (PastelLocal).
 # Not needed to use the Gemini backend.
 local = [
     "transformers>=4.40",
     "torch>=2.10.0",
     "sentencepiece>=0.2.1",
     "torchao>=0.16.0",
+]
+# Fine-tuning a new encoder with pastel.local.training.
+train = [
+    "pastel[local]",
+    "accelerate>=1.13.0",
 ]
 
 [tool.uv.sources]
@@ -56,9 +61,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-# `local_models` is the fine-tuning scripts, which are repo-local: they need the
-# heavy training dependencies and are not part of what consumers install.
-# Everything needed to *use* the local models is in `pastel.local`.
 include = ["pastel*", "training*"]
 
 [dependency-groups]
@@ -71,17 +73,6 @@ dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.1",
 ]
-# Fine-tuning new local models. Training only - using the resulting models
-# needs the `local` extra above, which this group includes.
-ml-labeller = [
-    "pastel[local]",
-    "datasets>=4.8.4",
-    "accelerate>=1.13.0",
-    "scikit-learn>=1.8.0",
-    "tiktoken>=0.12.0",
-]
-
-
 
 [tool.pytest.ini_options]
 pythonpath = "src"

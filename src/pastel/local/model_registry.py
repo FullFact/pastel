@@ -3,12 +3,9 @@ model lives.
 
 One encoder answers every question, with a small classification head per
 question. `model_map.json` records which head index answers which question:
-training allocates the indices, inference looks up the same mapping, or it
-would answer a question with another question's head.
-
-That map is the only source of truth for which questions the local backend can
-answer. The library declares no questions of its own: which questions to ask,
-and the weights to combine them with, belong to the downstream task.
+training writes it, inference reads it, or a question would be answered by
+another question's head. It is the only source of truth for what the local
+backend can answer - the library declares no questions of its own.
 """
 
 import json
@@ -23,20 +20,18 @@ MODELS: dict[str, str] = {
 
 MODEL_CATEGORY = "ModernBERT-multilingual"  # only using this one for now
 MODEL_MAP_FILENAME = "model_map.json"  # question -> head index
-
-# The one fine-tuned model, under its base model's directory.
 MODEL_DIR_NAME = "multi_head"
 
 # Where the fine-tuned models are kept. The default is relative, so it only
-# resolves when the working directory is the repo root - set the environment
-# variable to an absolute path anywhere else, production included.
+# resolves from the repo root - set the environment variable to an absolute
+# path anywhere else, production included.
 MODELS_DIR_ENV_VAR = "PASTEL_LOCAL_MODELS_DIR"
 DEFAULT_MODELS_DIR = Path("data/local_models/models")
 
 
 def models_dir() -> Path:
-    """The directory holding the fine-tuned models, from the
-    PASTEL_LOCAL_MODELS_DIR environment variable if it is set."""
+    """The directory holding the fine-tuned models, from
+    PASTEL_LOCAL_MODELS_DIR if it is set."""
     from_env = os.environ.get(MODELS_DIR_ENV_VAR)
     return Path(from_env) if from_env else DEFAULT_MODELS_DIR
 
@@ -52,13 +47,12 @@ def model_dir(model_category: str = MODEL_CATEGORY) -> Path:
 
 
 def model_map_path(model_category: str = MODEL_CATEGORY) -> Path:
-    """Where the question -> head index map for this model category is kept."""
+    """Where the question -> head index map is kept."""
     return category_dir(model_category) / MODEL_MAP_FILENAME
 
 
 def load_model_map(model_category: str = MODEL_CATEGORY) -> dict[str, int]:
-    """The recorded question -> head index map, or an empty dict if none has
-    been written yet."""
+    """The recorded question -> head index map, or `{}` if none was written."""
     path = model_map_path(model_category)
     if not path.exists():
         return {}
@@ -71,33 +65,44 @@ def load_model_map(model_category: str = MODEL_CATEGORY) -> dict[str, int]:
             f"{path} maps questions to something other than a head index "
             f"(e.g. {loaded[wrong_type[0]]!r}). Maps written before one model "
             "answered every question recorded a per-question model id instead; "
-            "those models have to be retrained together with "
-            "local_models.finetune_encoder."
+            "those models have to be retrained."
         )
     return loaded
 
 
-def head_for_question(question: str, model_category: str = MODEL_CATEGORY) -> int:
-    """The index of the head that answers `question`.
+def record_heads(
+    questions_in_head_order: list[str],
+    models_dir: Path | None = None,
+    model_category: str = MODEL_CATEGORY,
+) -> dict[str, int]:
+    """Write the question -> head index map, and return it.
 
-    Raises ValueError for a question the map has no entry for, because guessing
-    would silently answer with the wrong head.
+    Takes the questions in the order the heads were trained in - the only
+    thing that says which head answers which. The map is replaced rather than
+    merged: the body is shared, so a retrain produces a whole new model and a
+    leftover entry would point at a head trained for something else.
     """
+    path = (
+        model_map_path(model_category)
+        if models_dir is None
+        else Path(models_dir) / model_category / MODEL_MAP_FILENAME
+    )
+    heads = {question: head for head, question in enumerate(questions_in_head_order)}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(heads, indent=4, ensure_ascii=False), encoding="utf-8")
+    return heads
+
+
+def head_for_question(question: str, model_category: str = MODEL_CATEGORY) -> int:
+    """The index of the head that answers `question`. Raises rather than
+    guessing, which would answer with the wrong head."""
     recorded = load_model_map(model_category).get(question)
     if recorded is None:
         raise ValueError(
             f"No fine-tuned model is recorded for the question: {question!r}. "
-            f"Train one with local_models.finetune_encoder, which records it "
-            f"in {model_map_path(model_category)}."
+            f"Training records it in {model_map_path(model_category)}."
         )
     return recorded
-
-
-def head_count(model_category: str = MODEL_CATEGORY) -> int:
-    """How many heads a model covering every recorded question needs. Only
-    training needs this - inference reads the count from the checkpoint."""
-    heads = load_model_map(model_category).values()
-    return max(heads) + 1 if heads else 0
 
 
 def checkpoints(model_category: str = MODEL_CATEGORY) -> list[Path]:
@@ -112,18 +117,13 @@ def checkpoints(model_category: str = MODEL_CATEGORY) -> list[Path]:
 
 
 def latest_checkpoint(model_category: str = MODEL_CATEGORY) -> Path:
-    """The newest checkpoint of the fine-tuned model.
-
-    Raises FileNotFoundError if it has never been trained, or is not where we
-    are looking.
-    """
+    """The newest checkpoint of the fine-tuned model."""
     saved = checkpoints(model_category)
     if not saved:
         raise FileNotFoundError(
             f"No trained model found (expected checkpoints in "
-            f"{model_dir(model_category)}). Either train one with "
-            f"local_models.finetune_encoder, or point {MODELS_DIR_ENV_VAR} at "
-            "the directory holding the models."
+            f"{model_dir(model_category)}). Either train one, or point "
+            f"{MODELS_DIR_ENV_VAR} at the directory holding the models."
         )
     return saved[-1]
 
@@ -137,45 +137,23 @@ def has_model(question: str, model_category: str = MODEL_CATEGORY) -> bool:
 
 def available_questions(model_category: str = MODEL_CATEGORY) -> list[str]:
     """The questions the local backend can answer: every question in the model
-    map, in the order the map records them, if the model has been trained."""
+    map, in the order it records them, if the model has been trained."""
     if not checkpoints(model_category):
         return []
     return list(load_model_map(model_category))
 
 
 def require_available_questions(model_category: str = MODEL_CATEGORY) -> list[str]:
-    """available_questions(), but raising a helpful error rather than returning
-    an empty list when no local model can be found at all."""
+    """available_questions(), raising rather than returning an empty list when
+    no local model can be found at all."""
     available = available_questions(model_category)
     if not available:
         raise FileNotFoundError(
             f"No trained local model was found in {model_dir(model_category)}. "
-            "Train one with local_models.finetune_encoder, or point "
-            f"{MODELS_DIR_ENV_VAR} at the directory holding it. Run "
-            "`python -m pastel.local` to see what is expected "
-            "and where."
+            f"Train one, or point {MODELS_DIR_ENV_VAR} at the directory "
+            "holding it. `python -m pastel.local` shows what is expected where."
         )
     return available
-
-
-def assign_head(question: str, model_category: str = MODEL_CATEGORY) -> int:
-    """The head index that answers `question`, allocating and recording a new
-    one if this question has not been trained before.
-
-    Only training should call this - inference uses head_for_question().
-    """
-    question_map = load_model_map(model_category)
-    if question in question_map:
-        return question_map[question]
-
-    new_head = head_count(model_category)
-    question_map[question] = new_head
-    path = model_map_path(model_category)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(question_map, indent=4, ensure_ascii=False), encoding="utf-8"
-    )
-    return new_head
 
 
 def report(model_category: str = MODEL_CATEGORY) -> None:
@@ -188,15 +166,13 @@ def report(model_category: str = MODEL_CATEGORY) -> None:
         print("\nNo questions are recorded in the model map.")
         return
 
-    trained = bool(checkpoints(model_category))
+    marker = "OK     " if checkpoints(model_category) else "MISSING"
     print(f"\n{len(question_map)} recorded question(s):")
     for question, head in question_map.items():
-        marker = "OK     " if trained else "MISSING"
         print(f"  [{marker}] head {head:2d}  {question[:70]}")
 
-    if not trained:
+    if marker == "MISSING":
         print(
             "\nThe model has never been trained (or is not where we are "
-            "looking), so none of these questions can be answered. One model "
-            "answers all of them, so they are trained together."
+            "looking), so none of these questions can be answered."
         )

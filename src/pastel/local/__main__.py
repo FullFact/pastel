@@ -1,7 +1,4 @@
-"""Report which questions the local backend can really answer.
-
-python -m pastel.local
-"""
+"""`python -m pastel.local`: which questions the local backend can answer."""
 
 from pastel.local.model_registry import report
 

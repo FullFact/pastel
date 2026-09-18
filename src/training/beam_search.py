@@ -12,7 +12,7 @@ from sklearn.model_selection import train_test_split  # type: ignore
 
 from pastel.models import FEATURE_TYPE, BiasType
 from pastel.optimise_weights import lin_reg
-from pastel.pastel import EXAMPLES_TYPE, PastelModel, feature_as_string
+from pastel.pastel import EXAMPLES_TYPE, PastelModel
 from pastel.pastel_gemini import PastelGemini
 from training.cached_pastel import CachedPastel
 from training.crossvalidate_pastel import (
@@ -27,7 +27,7 @@ BackendType: TypeAlias = Callable[[dict[FEATURE_TYPE, float]], PastelModel]
 
 
 def load_data(
-    num_splits: int = 1, data_filename: str = "data/ff_merged_ct_less_health.jsonl"
+    num_splits: int = 1, data_filename: str = "data/example_training_data.jsonl"
 ) -> list[SplitData]:
     """Load labelled data set & split into train and test sets"""
     all_examples = load_examples(data_filename)
@@ -208,54 +208,3 @@ def evaluate_pastel_set(
     final_trained_model = train_model_from_examples(cached_train_model, all_examples)
 
     return mean_metrics, final_trained_model
-
-
-if __name__ == "__main__":
-    from dotenv import load_dotenv
-
-    load_dotenv()
-    all_features = [
-        "Could believing this claim harm someone's health?",
-        "Does this sentence relate to many people?",
-        "Is this sentence likely to be believed by many people?",
-        "is_claim_type_quantity",
-        "Could believing this claim lead to violence?",
-        "Does the sentence contain compare quantities, such as 'more' or 'less'?",
-        "Answer 'yes' if this is a general or universal claim or answer 'no' if it is about a single event or individual",
-        "Does the sentence discuss superlatives, such as 'biggest ever' or  'fastest growth'?",
-        "is_claim_type_rules",
-        "Is this sentence interesting to the average reader?",
-        "Does the sentence suggest a course of action?",
-        "is_claim_type_support",
-        "is_claim_type_other",
-        "is_claim_type_not_claim",
-        "is_claim_type_personal",
-        "is_claim_type_predictions",
-    ]
-    import json
-
-    results = {}
-    for max_iter in range(3, 11):
-        finished = False
-        loop = 0
-        while not finished:
-            try:
-                _best_features, _best_f1 = run_beam_search(
-                    all_features, beta=5, max_iter=max_iter
-                )
-                print(f"\n\nBest model at end of max_iter={max_iter}:")
-                model_dict: dict[str, float] | None = None
-                if _best_features:
-                    print(_best_f1)
-                    _best_features.display_model()
-                    model_dict = {
-                        feature_as_string(k): v for k, v in _best_features.model.items()
-                    }
-                results[max_iter] = {"best_f1": _best_f1, "best_features": model_dict}
-                with open("results.json", "w") as f:
-                    json.dump(results, f, indent=2)
-                finished = True
-
-            except Exception as e:
-                print(loop, e)
-                loop += 1
