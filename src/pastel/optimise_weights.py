@@ -60,7 +60,7 @@ def load_examples(filename: str) -> list[SCORED_EXAMPLES_TYPE]:
 
 
 def learn_weights(
-    training_data_filename: str, pasteliser: pastel.Pastel
+    training_data_filename: str, pasteliser: pastel.PastelModel
 ) -> pastel.ARRAY_TYPE:
     """Minimise sum squared error of labelled data set to find optimal
     set of weights. Note that first weight is for a constant term, so the

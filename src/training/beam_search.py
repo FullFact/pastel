@@ -5,14 +5,15 @@
 # otherwise the problem space grows exponentially.
 
 import asyncio
-from typing import TypeAlias, cast
+from typing import Callable, Sequence, TypeAlias
 
 import numpy as np
 from sklearn.model_selection import train_test_split  # type: ignore
 
 from pastel.models import FEATURE_TYPE, BiasType
 from pastel.optimise_weights import lin_reg
-from pastel.pastel import EXAMPLES_TYPE, Pastel
+from pastel.pastel import EXAMPLES_TYPE, PastelModel
+from pastel.pastel_gemini import PastelGemini
 from training.cached_pastel import CachedPastel
 from training.crossvalidate_pastel import (
     evaluate_model,
@@ -21,6 +22,8 @@ from training.crossvalidate_pastel import (
 
 # One split of training data & test data
 SplitData: TypeAlias = tuple[list[EXAMPLES_TYPE], list[EXAMPLES_TYPE]]
+# Anything that turns a model dict into a Pastel model, i.e. a PastelModel subclass
+BackendType: TypeAlias = Callable[[dict[FEATURE_TYPE, float]], PastelModel]
 
 
 def load_data(
@@ -28,6 +31,13 @@ def load_data(
 ) -> list[SplitData]:
     """Load labelled data set & split into train and test sets"""
     all_examples = load_examples(data_filename)
+    score_counts: dict[int, int] = {}
+    for _, score in all_examples:
+        rounded = int(round(score))
+        score_counts[rounded] = score_counts.get(rounded, 0) + 1
+    print(f"Loaded {len(all_examples)} examples. Score distribution:")
+    for val in sorted(score_counts):
+        print(f"  {val}: {score_counts[val]}")
     all_splits = []
     for _ in range(num_splits):
         train_examples, test_examples = train_test_split(all_examples, test_size=0.5)
@@ -36,13 +46,13 @@ def load_data(
 
 
 def add_one(
-    current_features: frozenset[str], all_features: list[str]
-) -> list[frozenset[str]]:
+    current_features: frozenset[FEATURE_TYPE], all_features: Sequence[FEATURE_TYPE]
+) -> list[frozenset[FEATURE_TYPE]]:
     """Take the current set and create a list of new sets, identical
     except each has one new, different feature added."""
     new_candidates = []
     for f in all_features:
-        S = set(current_features)
+        S: set[FEATURE_TYPE] = set(current_features)
         if f not in S:
             S.add(f)
             new_candidates.append(frozenset(S))
@@ -50,13 +60,17 @@ def add_one(
 
 
 def final_pass(
-    good_pool: list[frozenset[str]], all_splits: list[SplitData]
-) -> tuple[Pastel | None, float]:
+    good_pool: list[frozenset[FEATURE_TYPE]],
+    all_splits: list[SplitData],
+    backend: BackendType = PastelGemini,
+) -> tuple[PastelModel | None, float]:
     """Take a shortlist of 'good' feature sets and do a final evaluation"""
     highest_score = -1.0
     best_model = None
     for candidate in good_pool:
-        metrics, train_model = evaluate_pastel_set(candidate, all_splits, threshold=3.0)
+        metrics, train_model = evaluate_pastel_set(
+            candidate, all_splits, threshold=3.0, backend=backend
+        )
         if metrics["f1"] > highest_score:
             highest_score = metrics["f1"]
             best_model = train_model
@@ -64,17 +78,24 @@ def final_pass(
 
 
 def run_beam_search(
-    all_features: list[str], beta: int = 3, max_iter: int | None = None
-) -> tuple[Pastel | None, float]:
+    all_features: Sequence[FEATURE_TYPE],
+    beta: int = 3,
+    max_iter: int | None = None,
+    backend: BackendType = PastelGemini,
+) -> tuple[PastelModel | None, float]:
     """Main feature selection algorithm. Systematically add more and
     more features, but only keep the best 'beta' models at each iteration.
     See https://en.wikipedia.org/wiki/Beam_search for background.
+    beta is the "beam width", i.e. the number of solutions carried forward from
+    each iteration to the next.
     Each iteration adds one new feature, so max_iter is also the maximum number
-    of features to be considered. If set to None, defaults to 'try all features'."""
+    of features to be considered. If set to None, defaults to 'try all features'.
+    backend is the Pastel model class used to answer the questions; every
+    answer is cached locally regardless of which backend is used."""
 
-    current_candidates: dict[frozenset[str], float] = {frozenset(): 0.0}
-    evaluated_sets = []
-    good_pool = []
+    current_candidates: dict[frozenset[FEATURE_TYPE], float] = {frozenset(): 0.0}
+    evaluated_sets: list[frozenset[FEATURE_TYPE]] = []
+    good_pool: list[frozenset[FEATURE_TYPE]] = []
     if not max_iter:
         max_iter = len(all_features)
     all_splits = load_data(num_splits=3)
@@ -83,7 +104,7 @@ def run_beam_search(
         print(f"\nIteration {i}")
         # At each iteration, we take the current best few models and
         # consider adding each available feature to each of them
-        scored_candidates = {}
+        scored_candidates: dict[frozenset[FEATURE_TYPE], float] = {}
         for candidate in current_candidates:
             new_candidates = add_one(candidate, all_features)
             if len(new_candidates) == 0:
@@ -92,7 +113,9 @@ def run_beam_search(
             for nc in new_candidates:
                 if nc not in evaluated_sets:
                     # only evaluate previously unseen sets of features
-                    metrics, _ = evaluate_pastel_set(nc, all_splits, threshold=3.0)
+                    metrics, _ = evaluate_pastel_set(
+                        nc, all_splits, threshold=3.0, backend=backend
+                    )
                     scored_candidates[nc] = metrics["f1"]
                     evaluated_sets.append(nc)
 
@@ -117,23 +140,17 @@ def run_beam_search(
         f"Feature sets compared: {len(evaluated_sets)}; starting final pass of {len(good_pool)}."
     )
     # Process the store of best candidates and evaluate them to find the final best one
-    best_features, best_f1 = final_pass(good_pool, all_splits)
+    best_features, best_f1 = final_pass(good_pool, all_splits, backend=backend)
     return best_features, best_f1
 
 
 def train_model_from_examples(
-    train_model: Pastel, train_examples: list[EXAMPLES_TYPE]
-) -> Pastel:
+    train_model: PastelModel, train_examples: list[EXAMPLES_TYPE]
+) -> PastelModel:
     """Optimise weights of a model using the training set of sentences"""
     train_sentences = [ex[0] for ex in train_examples]
-    # Get (maybe cached) responses to questions from genAI
+    # Get (maybe cached) responses to every feature - questions and functions
     responses = asyncio.run(train_model.get_answers_to_questions(train_sentences))
-    # Update each response with function responses too.
-    for ts in train_sentences:
-        responses_of_functions: dict[FEATURE_TYPE, float] = {
-            cast(FEATURE_TYPE, f): float(f(ts)) for f in train_model.get_functions()
-        }
-        responses[ts].update(responses_of_functions)
 
     scores = train_model.quantify_answers(list(responses.values()))
 
@@ -151,15 +168,15 @@ def train_model_from_examples(
         feat: float(weight)
         for feat, weight in zip(train_model.model.keys(), new_weights)
     }
-    new_pastel = Pastel(new_model, train_model.labels)
-    return new_pastel
+    return train_model.create_copy_with_different_model(new_model)
 
 
 def evaluate_pastel_set(
-    question_subset: frozenset[str],
+    question_subset: frozenset[FEATURE_TYPE],
     all_splits: list[SplitData],
     threshold: float,
-) -> tuple[dict[str, float], Pastel]:
+    backend: BackendType = PastelGemini,
+) -> tuple[dict[str, float], PastelModel]:
     """Create a Pastel model from a set of features (which is a set of questions) and
     evaluate it.
     That model will predict answers & get scores for test set of sentences.
@@ -169,8 +186,7 @@ def evaluate_pastel_set(
     earlier stages of learning."""
     q_model: dict[FEATURE_TYPE, float] = {q: 0.0 for q in question_subset}
     q_model[BiasType.BIAS] = 0.0
-    train_model = Pastel(q_model)
-    cached_train_model = CachedPastel.from_pastel(train_model)
+    cached_train_model = CachedPastel.from_pastel(backend(q_model))
     all_metrics = []
 
     for train_examples, test_examples in all_splits:
@@ -183,9 +199,9 @@ def evaluate_pastel_set(
     for key in all_metrics[0].keys():
         mean_metrics[key] = sum(d[key] for d in all_metrics) / len(all_metrics)
 
-    print("\nF1 scores:")
-    _ = [print(m["f1"], end="\t") for m in all_metrics]
-    print(mean_metrics["f1"])
+    print(f"F1 scores ({len(all_splits)} splits):\t", end="")
+    _ = [print(f'{m["f1"]:4.3f}', end="\t") for m in all_metrics]
+    print(f"Mean: {mean_metrics["f1"]:4.3f}")
 
     # combine train & test data to optimise best model with this feature set
     all_examples = all_splits[0][0] + all_splits[0][1]
