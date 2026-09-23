@@ -65,6 +65,7 @@ jobs:
           release_branches: main
           pre_release_branches: dev
           tag_prefix: ''
+          default_preset: conventionalcommits
 
       - name: Create a GitHub release
         uses: ncipollo/release-action@v1
