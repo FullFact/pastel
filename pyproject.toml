@@ -39,7 +39,7 @@ train = [
 ]
 
 [tool.uv.sources]
-genai_utils = { git = "https://github.com/FullFact/genai-utils.git", tag = "5.6.0"}
+genai_utils = { git = "https://github.com/FullFact/genai-utils.git", tag = "6.0.0"}
 # PASTEL only ever runs the local models on CPU, so pull torch from PyTorch's
 # CPU-only index rather than PyPI (whose Linux/Windows wheels drag in ~3GB of
 # CUDA/NVIDIA and Triton libraries we never use). macOS wheels on PyPI are
