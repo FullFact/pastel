@@ -3,7 +3,7 @@ import logging
 from textwrap import dedent
 
 import tenacity
-from genai_utils.gemini import run_prompt_async
+from genai_utils.llm.gemini import GeminiChat
 from google.api_core import exceptions as core_exceptions
 
 from pastel.models import FEATURE_TYPE, Sentence
@@ -125,7 +125,9 @@ class PastelGemini(PastelModel):
         sent_answers: dict[FEATURE_TYPE, float] = {}
         prompt = self._make_prompt(sentence)
 
-        raw_output = await run_prompt_async(prompt, labels=self.labels)
+        raw_output = await GeminiChat(labels=self.labels).run_message(
+            prompt, use_thinking=False
+        )
         raw_output = raw_output.strip().lower()
 
         if "question" in raw_output:

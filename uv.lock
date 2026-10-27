@@ -542,7 +542,7 @@ wheels = [
 [[package]]
 name = "genai-utils"
 version = "0.0.1"
-source = { git = "https://github.com/FullFact/genai-utils.git?tag=5.6.0#0fd2cbab3cc61858748f7764152bdbbe4de771e6" }
+source = { git = "https://github.com/FullFact/genai-utils.git?tag=6.0.0#12537fa97bc9458f19b1b4642053094496f2af56" }
 dependencies = [
     { name = "google-cloud-core" },
     { name = "google-genai" },
@@ -1282,7 +1282,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "accelerate", marker = "extra == 'train'", specifier = ">=1.13.0" },
-    { name = "genai-utils", git = "https://github.com/FullFact/genai-utils.git?tag=5.6.0" },
+    { name = "genai-utils", git = "https://github.com/FullFact/genai-utils.git?tag=6.0.0" },
     { name = "google-cloud-core", specifier = ">=2.4.3" },
     { name = "pastel", extras = ["local"], marker = "extra == 'train'" },
     { name = "pydantic", specifier = ">=2.11.7" },
