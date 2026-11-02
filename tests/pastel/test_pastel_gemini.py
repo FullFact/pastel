@@ -33,13 +33,10 @@ def test_make_prompt(pastel_instance: PastelGemini) -> None:
     assert "Is this a load of old nonsense" not in prompt
 
 
-@patch(
-    "pastel.pastel_gemini.run_prompt_async",
-    side_effect=ValueError("Gemini failed"),
-)
-async def test_retries(
-    mock_run_prompt: AsyncMock, pastel_instance: PastelGemini
-) -> None:
+@patch("pastel.pastel_gemini.GeminiChat")
+async def test_retries(mock_chat, pastel_instance: PastelGemini) -> None:
+    mock_run_prompt = AsyncMock(side_effect=ValueError("Gemini failed"))
+    mock_chat.return_value.run_message = mock_run_prompt
     sentence = Sentence("This is a claim.", tuple("quantity"))
     with pytest.raises(Exception):
         await pastel_instance._get_answers_for_single_sentence(sentence)
@@ -59,10 +56,8 @@ async def test_parses_llm_answers(
     expected: dict[FEATURE_TYPE, float],
     pastel_instance: PastelGemini,
 ) -> None:
-    with patch(
-        "pastel.pastel_gemini.run_prompt_async",
-        new=AsyncMock(return_value=raw_output),
-    ):
+    with patch("pastel.pastel_gemini.GeminiChat") as mock_chat:
+        mock_chat.return_value.run_message = AsyncMock(return_value=raw_output)
         answers = await pastel_instance._get_llm_answers_for_single_sentence(
             Sentence("a claim", tuple("quantity"))
         )
@@ -72,10 +67,8 @@ async def test_parses_llm_answers(
 async def test_wrong_number_of_answers_raises(pastel_instance: PastelGemini) -> None:
     """A reply that doesn't line up with the questions must not be guessed at.
     ValueError is retryable, so tenacity re-raises it as RetryError."""
-    with patch(
-        "pastel.pastel_gemini.run_prompt_async",
-        new=AsyncMock(return_value="0. Yes"),
-    ):
+    with patch("pastel.pastel_gemini.GeminiChat") as mock_chat:
+        mock_chat.return_value.run_message = AsyncMock(return_value="0. Yes")
         with pytest.raises(tenacity.RetryError):
             await pastel_instance._get_llm_answers_for_single_sentence(
                 Sentence("a claim", tuple("quantity"))
@@ -125,17 +118,17 @@ def test_labels_default_to_empty() -> None:
     assert PastelGemini({BiasType.BIAS: 1.0, Q1: 1.0}).labels == {}
 
 
-@patch("pastel.pastel_gemini.run_prompt_async", new_callable=AsyncMock)
-async def test_billing_labels_are_sent_with_every_call(mock_run_prompt) -> None:
+@patch("pastel.pastel_gemini.GeminiChat")
+async def test_billing_labels_are_sent_with_every_call(mock_chat) -> None:
     """Vertex billing labels let this model's Gemini spend be separated out in
     Google Cloud billing, so every call has to carry them."""
-    mock_run_prompt.return_value = "0. yes"
+    mock_chat.return_value.run_message = AsyncMock(return_value="0. yes")
     labels = {"team": "afc", "job": "checkworthy"}
     model = PastelGemini({BiasType.BIAS: 1.0, Q1: 1.0}, labels=labels)
 
     await model.get_answers_to_questions([Sentence("A claim.", ("quantity",))])
 
-    assert mock_run_prompt.await_args.kwargs["labels"] == labels
+    assert mock_chat.call_args.kwargs["labels"] == labels
 
 
 def test_labels_survive_loading_and_copying(tmp_path) -> None:
